@@ -6,3 +6,6 @@
 __pycache__/
 *.pyc
 *.db
+
+# Windows Zone Identifier sidecar files
+*:Zone.Identifier

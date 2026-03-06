@@ -11,6 +11,7 @@ Commands:
     set-agency   <agency>   [options]     Set EDI flags for an agency
     set-advertiser <advertiser> [options] Set notarized flag for an advertiser
     show-month   <YYYY-MM>                Show all orders active in a billing month
+    remove-order <contract_number>        Remove an order and its monthly data from the DB
 
 set-agency options:
     --edi / --no-edi        Invoice delivered via EDI upload
@@ -25,6 +26,7 @@ Examples:
     uv run python manage_db.py set-agency "Admerasia Inc." --edi --edi-notes "Mediaocean"
     uv run python manage_db.py set-advertiser "Muckleshoot Casino" --notarized
     uv run python manage_db.py show-month 2026-02
+    uv run python manage_db.py remove-order 2400
 """
 
 import argparse
@@ -37,6 +39,7 @@ from orders_db import (
     get_agency_flags,
     get_all_agency_flags,
     get_conn,
+    get_order,
     init_db,
     set_advertiser_flags,
     set_agency_flags,
@@ -190,6 +193,45 @@ def cmd_show_month(conn, args):
         print(f"  EDI UPLOAD:         {', '.join(sorted(edi_list))}")
 
 
+def cmd_remove_order(conn, args):
+    try:
+        cn = int(args.contract_number)
+    except ValueError:
+        print(f"Invalid contract number '{args.contract_number}'. Must be an integer.")
+        sys.exit(1)
+
+    row = get_order(conn, cn)
+    if row is None:
+        print(f"No order found with contract number {cn}.")
+        sys.exit(1)
+
+    monthly = conn.execute(
+        "SELECT year, month, market, gross FROM order_monthly WHERE contract_number = ? ORDER BY year, month, market",
+        (cn,)
+    ).fetchall()
+
+    print(f"Contract:   {cn}")
+    print(f"Advertiser: {row['advertiser'] or '?'}")
+    print(f"Agency:     {row['client'] or '?'}")
+    print(f"Market:     {row['market'] or '?'}")
+    print(f"File:       {row['file_path']}")
+    if monthly:
+        print(f"Monthly rows ({len(monthly)}):")
+        for m in monthly:
+            print(f"  {m['year']}-{m['month']:02d} {m['market']:<8} ${m['gross']:,.2f}")
+    else:
+        print("Monthly rows: (none)")
+
+    confirm = input("\nDelete this order and all its monthly data? [y/N] ").strip().lower()
+    if confirm != "y":
+        print("Cancelled.")
+        return
+
+    conn.execute("DELETE FROM orders WHERE contract_number = ?", (cn,))
+    # order_monthly deleted via ON DELETE CASCADE
+    print(f"Removed contract {cn}.")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Manage agency/advertiser flags in the billing database.",
@@ -218,6 +260,9 @@ def main():
     p_month = sub.add_parser("show-month", help="Show orders active in a billing month")
     p_month.add_argument("month", metavar="YYYY-MM")
 
+    p_remove = sub.add_parser("remove-order", help="Remove an order and its monthly data from the DB")
+    p_remove.add_argument("contract_number", metavar="CONTRACT_NUMBER")
+
     args = parser.parse_args()
     db_path = Path(args.db)
     _ensure_db(db_path)
@@ -233,6 +278,8 @@ def main():
             cmd_set_advertiser(conn, args)
         elif args.command == "show-month":
             cmd_show_month(conn, args)
+        elif args.command == "remove-order":
+            cmd_remove_order(conn, args)
 
 
 if __name__ == "__main__":
