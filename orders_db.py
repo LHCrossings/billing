@@ -25,8 +25,30 @@ def get_conn(db_path: Path = DB_PATH):
 
 
 def init_db(db_path: Path = DB_PATH):
-    """Create tables if they don't exist."""
+    """Create tables if they don't exist. Migrates legacy client_flags if present."""
     with get_conn(db_path) as conn:
+        # Migrate legacy client_flags → agency_flags + advertiser_flags
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        if "client_flags" in tables and "agency_flags" not in tables:
+            conn.executescript("""
+                CREATE TABLE agency_flags (
+                    agency      TEXT PRIMARY KEY,
+                    edi         INTEGER NOT NULL DEFAULT 0,
+                    edi_notes   TEXT
+                );
+                CREATE TABLE advertiser_flags (
+                    advertiser  TEXT PRIMARY KEY,
+                    notarized   INTEGER NOT NULL DEFAULT 0
+                );
+                INSERT INTO advertiser_flags (advertiser, notarized)
+                    SELECT client, notarized FROM client_flags WHERE notarized = 1;
+                INSERT INTO agency_flags (agency, edi, edi_notes)
+                    SELECT client, edi, edi_notes FROM client_flags WHERE edi = 1;
+                DROP TABLE client_flags;
+            """)
+
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS orders (
                 contract_number    INTEGER PRIMARY KEY,
@@ -54,11 +76,15 @@ def init_db(db_path: Path = DB_PATH):
                 last_updated       TEXT
             );
 
-            CREATE TABLE IF NOT EXISTS client_flags (
-                client      TEXT PRIMARY KEY,
-                notarized   INTEGER NOT NULL DEFAULT 0,
+            CREATE TABLE IF NOT EXISTS agency_flags (
+                agency      TEXT PRIMARY KEY,
                 edi         INTEGER NOT NULL DEFAULT 0,
                 edi_notes   TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS advertiser_flags (
+                advertiser  TEXT PRIMARY KEY,
+                notarized   INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS order_monthly (
@@ -143,57 +169,65 @@ def get_expected_monthly(
     return (row["gross"], row["net"]) if row else None
 
 
-def get_client_flags(conn: sqlite3.Connection, client: str) -> sqlite3.Row | None:
-    """Return client_flags row for a client name, or None if not set."""
-    return conn.execute(
-        "SELECT * FROM client_flags WHERE client = ?", (client,)
+def _upsert_flag(conn, table: str, key_col: str, key_val: str, updates: dict):
+    """Generic upsert helper for single-key flag tables."""
+    existing = conn.execute(
+        f"SELECT * FROM {table} WHERE {key_col} = ?", (key_val,)
     ).fetchone()
+    if existing is None:
+        cols = [key_col] + list(updates.keys())
+        vals = [key_val] + list(updates.values())
+        placeholders = ", ".join("?" * len(cols))
+        conn.execute(
+            f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({placeholders})", vals
+        )
+    elif updates:
+        set_clause = ", ".join(f"{k} = :{k}" for k in updates)
+        updates[key_col] = key_val
+        conn.execute(f"UPDATE {table} SET {set_clause} WHERE {key_col} = :{key_col}", updates)
 
 
-def set_client_flags(
+# --- Agency flags (EDI) ---
+
+def get_agency_flags(conn: sqlite3.Connection, agency: str) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM agency_flags WHERE agency = ?", (agency,)).fetchone()
+
+
+def set_agency_flags(
     conn: sqlite3.Connection,
-    client: str,
-    notarized: bool | None = None,
+    agency: str,
     edi: bool | None = None,
     edi_notes: str | None = None,
 ):
-    """
-    Insert or update client_flags for a client.
-    Only updates fields that are explicitly passed (not None).
-    """
-    existing = get_client_flags(conn, client)
-    if existing is None:
-        conn.execute("""
-            INSERT INTO client_flags (client, notarized, edi, edi_notes)
-            VALUES (?, ?, ?, ?)
-        """, (
-            client,
-            int(notarized) if notarized is not None else 0,
-            int(edi) if edi is not None else 0,
-            edi_notes,
-        ))
-    else:
-        updates = {}
-        if notarized is not None:
-            updates["notarized"] = int(notarized)
-        if edi is not None:
-            updates["edi"] = int(edi)
-        if edi_notes is not None:
-            updates["edi_notes"] = edi_notes
-        if updates:
-            set_clause = ", ".join(f"{k} = :{k}" for k in updates)
-            updates["client"] = client
-            conn.execute(
-                f"UPDATE client_flags SET {set_clause} WHERE client = :client",
-                updates,
-            )
+    updates = {}
+    if edi is not None:
+        updates["edi"] = int(edi)
+    if edi_notes is not None:
+        updates["edi_notes"] = edi_notes
+    if updates:
+        _upsert_flag(conn, "agency_flags", "agency", agency, updates)
 
 
-def get_all_client_flags(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    """Return all client_flags rows, sorted by client name."""
+def get_all_agency_flags(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM agency_flags ORDER BY agency").fetchall()
+
+
+# --- Advertiser flags (notarization) ---
+
+def get_advertiser_flags(conn: sqlite3.Connection, advertiser: str) -> sqlite3.Row | None:
     return conn.execute(
-        "SELECT * FROM client_flags ORDER BY client"
-    ).fetchall()
+        "SELECT * FROM advertiser_flags WHERE advertiser = ?", (advertiser,)
+    ).fetchone()
+
+
+def set_advertiser_flags(
+    conn: sqlite3.Connection,
+    advertiser: str,
+    notarized: bool | None = None,
+):
+    if notarized is not None:
+        _upsert_flag(conn, "advertiser_flags", "advertiser", advertiser,
+                     {"notarized": int(notarized)})
 
 
 def get_order(conn: sqlite3.Connection, contract_number: int) -> sqlite3.Row | None:

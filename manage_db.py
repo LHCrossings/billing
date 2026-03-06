@@ -1,23 +1,29 @@
 """
-manage_db.py - View and update client flags in the billing database.
+manage_db.py - View and update agency/advertiser flags in the billing database.
+
+EDI is an agency-level setting (the agency has a vendor portal).
+Notarization is an advertiser-level setting (the client requires a notarized affidavit,
+which also drives which affidavit template is used).
 
 Commands:
-    list                          List all clients with their flags
-    list-clients                  List all known clients from the orders table
-    set <client> [options]        Set flags for a client
-    show-month <YYYY-MM>          Show all orders active in a billing month with flags
+    list-agencies                         List all agencies with EDI flags
+    list-advertisers                      List all advertisers with notarized flags
+    set-agency   <agency>   [options]     Set EDI flags for an agency
+    set-advertiser <advertiser> [options] Set notarized flag for an advertiser
+    show-month   <YYYY-MM>                Show all orders active in a billing month
 
-set options:
-    --notarized / --no-notarized  Affidavit requires notarization (different template)
-    --edi / --no-edi              Invoice delivered via EDI upload
-    --edi-notes TEXT              Notes about EDI system or process
+set-agency options:
+    --edi / --no-edi        Invoice delivered via EDI upload
+    --edi-notes TEXT        Notes about EDI system or process (portal, login, etc.)
+
+set-advertiser options:
+    --notarized / --no-notarized    Affidavit requires notarization (different template)
 
 Examples:
-    uv run python manage_db.py list
-    uv run python manage_db.py list-clients
-    uv run python manage_db.py set "Rodi Platcow Malin" --notarized
-    uv run python manage_db.py set "Admerasia Inc." --edi --edi-notes "Mediaocean"
-    uv run python manage_db.py set "H&L Partners" --no-edi
+    uv run python manage_db.py list-agencies
+    uv run python manage_db.py list-advertisers
+    uv run python manage_db.py set-agency "Admerasia Inc." --edi --edi-notes "Mediaocean"
+    uv run python manage_db.py set-advertiser "Muckleshoot Casino" --notarized
     uv run python manage_db.py show-month 2026-02
 """
 
@@ -27,99 +33,103 @@ from pathlib import Path
 
 from orders_db import (
     DB_PATH,
-    get_all_client_flags,
-    get_client_flags,
+    get_advertiser_flags,
+    get_agency_flags,
+    get_all_agency_flags,
     get_conn,
     init_db,
-    set_client_flags,
+    set_advertiser_flags,
+    set_agency_flags,
 )
 
-# Ensure schema is current whenever this script runs
+
 def _ensure_db(db_path: Path):
     if not db_path.exists():
         print(f"Database not found: {db_path}")
         print("Run backfill.py first to create and populate the database.")
         sys.exit(1)
-    init_db(db_path)  # creates any missing tables (safe to run repeatedly)
+    init_db(db_path)
 
 
-def cmd_list(conn, args):
-    rows = get_all_client_flags(conn)
-    if not rows:
-        print("No client flags set yet. Use 'set' to add entries.")
-        return
-
-    print(f"{'CLIENT':<40} {'NOTARIZED':<12} {'EDI':<6} EDI NOTES")
-    print("-" * 80)
-    for row in rows:
-        notarized = "YES" if row["notarized"] else "-"
-        edi = "YES" if row["edi"] else "-"
-        notes = row["edi_notes"] or ""
-        print(f"{row['client']:<40} {notarized:<12} {edi:<6} {notes}")
-
-
-def cmd_list_clients(conn, args):
-    """Show all distinct clients from the orders table, with their current flag status."""
+def cmd_list_agencies(conn, args):
+    """List all agencies from orders table with EDI flag status."""
     rows = conn.execute("""
-        SELECT DISTINCT o.client,
-               cf.notarized, cf.edi, cf.edi_notes
+        SELECT DISTINCT o.client AS agency,
+               af.edi, af.edi_notes
         FROM orders o
-        LEFT JOIN client_flags cf ON cf.client = o.client
+        LEFT JOIN agency_flags af ON af.agency = o.client
+        WHERE o.client IS NOT NULL AND o.client != ''
         ORDER BY o.client
     """).fetchall()
 
     if not rows:
-        print("No orders in database yet.")
+        print("No orders in database.")
         return
 
-    print(f"{'CLIENT':<40} {'NOTARIZED':<12} {'EDI':<6} EDI NOTES")
+    print(f"{'AGENCY':<45} {'EDI':<6} EDI NOTES")
     print("-" * 80)
     for row in rows:
-        notarized = "YES" if row["notarized"] else "-"
         edi = "YES" if row["edi"] else "-"
         notes = row["edi_notes"] or ""
-        flag_note = " (no flags set)" if row["notarized"] is None else ""
-        print(f"{row['client']:<40} {notarized:<12} {edi:<6} {notes}{flag_note}")
+        flag_note = " (not set)" if row["edi"] is None else ""
+        print(f"{row['agency']:<45} {edi:<6} {notes}{flag_note}")
 
 
-def cmd_set(conn, args):
-    client = args.client
+def cmd_list_advertisers(conn, args):
+    """List all advertisers from orders table with notarized flag status."""
+    rows = conn.execute("""
+        SELECT DISTINCT o.advertiser,
+               af.notarized
+        FROM orders o
+        LEFT JOIN advertiser_flags af ON af.advertiser = o.advertiser
+        WHERE o.advertiser IS NOT NULL AND o.advertiser != ''
+        ORDER BY o.advertiser
+    """).fetchall()
 
-    # Resolve --notarized / --no-notarized
-    notarized = None
-    if args.notarized:
-        notarized = True
-    elif args.no_notarized:
-        notarized = False
+    if not rows:
+        print("No orders in database.")
+        return
 
-    # Resolve --edi / --no-edi
-    edi = None
-    if args.edi:
-        edi = True
-    elif args.no_edi:
-        edi = False
+    print(f"{'ADVERTISER':<45} NOTARIZED")
+    print("-" * 60)
+    for row in rows:
+        notarized = "YES" if row["notarized"] else "-"
+        flag_note = " (not set)" if row["notarized"] is None else ""
+        print(f"{row['advertiser']:<45} {notarized}{flag_note}")
 
-    edi_notes = args.edi_notes  # None if not provided
 
-    if notarized is None and edi is None and edi_notes is None:
-        print("Nothing to update. Provide at least one flag option.")
-        print("  --notarized / --no-notarized")
-        print("  --edi / --no-edi")
-        print("  --edi-notes TEXT")
+def cmd_set_agency(conn, args):
+    agency = args.agency
+    edi = True if args.edi else (False if args.no_edi else None)
+    edi_notes = args.edi_notes
+
+    if edi is None and edi_notes is None:
+        print("Nothing to update. Provide --edi, --no-edi, or --edi-notes TEXT.")
         sys.exit(1)
 
-    set_client_flags(conn, client, notarized=notarized, edi=edi, edi_notes=edi_notes)
-
-    row = get_client_flags(conn, client)
-    print(f"Updated: {client}")
-    print(f"  Notarized: {'YES' if row['notarized'] else 'no'}")
-    print(f"  EDI:       {'YES' if row['edi'] else 'no'}")
+    set_agency_flags(conn, agency, edi=edi, edi_notes=edi_notes)
+    row = get_agency_flags(conn, agency)
+    print(f"Updated agency: {agency}")
+    print(f"  EDI: {'YES' if row['edi'] else 'no'}")
     if row["edi_notes"]:
         print(f"  EDI notes: {row['edi_notes']}")
 
 
+def cmd_set_advertiser(conn, args):
+    advertiser = args.advertiser
+    notarized = True if args.notarized else (False if args.no_notarized else None)
+
+    if notarized is None:
+        print("Nothing to update. Provide --notarized or --no-notarized.")
+        sys.exit(1)
+
+    set_advertiser_flags(conn, advertiser, notarized=notarized)
+    row = get_advertiser_flags(conn, advertiser)
+    print(f"Updated advertiser: {advertiser}")
+    print(f"  Notarized: {'YES' if row['notarized'] else 'no'}")
+
+
 def cmd_show_month(conn, args):
-    """Show all orders with activity in a given billing month, with their flags."""
     try:
         year, month = map(int, args.month.split("-"))
     except ValueError:
@@ -130,19 +140,19 @@ def cmd_show_month(conn, args):
         SELECT
             o.contract_number,
             o.advertiser,
-            o.client,
-            o.market,
-            om.market AS billed_market,
+            o.client       AS agency,
+            om.market,
             om.gross,
             om.net,
-            cf.notarized,
-            cf.edi,
-            cf.edi_notes
+            af_adv.notarized,
+            af_ag.edi,
+            af_ag.edi_notes
         FROM order_monthly om
         JOIN orders o ON o.contract_number = om.contract_number
-        LEFT JOIN client_flags cf ON cf.client = o.client
+        LEFT JOIN advertiser_flags af_adv ON af_adv.advertiser = o.advertiser
+        LEFT JOIN agency_flags     af_ag  ON af_ag.agency      = o.client
         WHERE om.year = ? AND om.month = ?
-        ORDER BY o.client, o.contract_number, om.market
+        ORDER BY o.client, o.advertiser, om.market
     """, (year, month)).fetchall()
 
     if not rows:
@@ -151,8 +161,8 @@ def cmd_show_month(conn, args):
 
     from aggregate import MONTH_NAMES
     print(f"Orders active in {MONTH_NAMES[month]} {year}:\n")
-    print(f"  {'CONTRACT':<10} {'ADVERTISER':<30} {'MARKET':<8} {'GROSS':>10}  {'NOTARIZED':<10} {'EDI':<6} EDI NOTES")
-    print("  " + "-" * 90)
+    print(f"  {'CONTRACT':<10} {'ADVERTISER':<28} {'AGENCY':<28} {'MKT':<6} {'GROSS':>10}  {'NOTARIZED':<10} {'EDI'}")
+    print("  " + "-" * 100)
 
     notarized_list = []
     edi_list = []
@@ -160,19 +170,15 @@ def cmd_show_month(conn, args):
     for row in rows:
         notarized = "YES" if row["notarized"] else "-"
         edi = "YES" if row["edi"] else "-"
-        notes = row["edi_notes"] or ""
         print(
-            f"  {row['contract_number']:<10} {(row['advertiser'] or row['client'] or '?'):<30} "
-            f"{row['billed_market']:<8} ${row['gross']:>9,.2f}  {notarized:<10} {edi:<6} {notes}"
+            f"  {row['contract_number']:<10} {(row['advertiser'] or '?'):<28} "
+            f"{(row['agency'] or '?'):<28} {row['market']:<6} "
+            f"${row['gross']:>9,.2f}  {notarized:<10} {edi}"
         )
-        if row["notarized"]:
-            advertiser = row["advertiser"] or row["client"] or "?"
-            if advertiser not in notarized_list:
-                notarized_list.append(advertiser)
-        if row["edi"]:
-            advertiser = row["advertiser"] or row["client"] or "?"
-            if advertiser not in edi_list:
-                edi_list.append(advertiser)
+        if row["notarized"] and row["advertiser"] not in notarized_list:
+            notarized_list.append(row["advertiser"])
+        if row["edi"] and row["agency"] not in edi_list:
+            edi_list.append(row["agency"])
 
     if notarized_list:
         print(f"\n  NEEDS NOTARIZATION: {', '.join(sorted(notarized_list))}")
@@ -182,41 +188,43 @@ def cmd_show_month(conn, args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Manage client flags in the billing database.",
+        description="Manage agency/advertiser flags in the billing database.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--db", default=str(DB_PATH), help="Path to billing database")
-
     sub = parser.add_subparsers(dest="command")
     sub.required = True
 
-    sub.add_parser("list", help="List all clients with flags set")
-    sub.add_parser("list-clients", help="List all clients from orders table with flag status")
+    sub.add_parser("list-agencies",    help="List all agencies with EDI flag status")
+    sub.add_parser("list-advertisers", help="List all advertisers with notarized flag status")
 
-    p_set = sub.add_parser("set", help="Set flags for a client")
-    p_set.add_argument("client", help="Client (agency) name, exactly as it appears in orders")
-    p_set.add_argument("--notarized", action="store_true", default=False)
-    p_set.add_argument("--no-notarized", action="store_true", default=False)
-    p_set.add_argument("--edi", action="store_true", default=False)
-    p_set.add_argument("--no-edi", action="store_true", default=False)
-    p_set.add_argument("--edi-notes", default=None, metavar="TEXT",
-                       help="Notes about the EDI system or process")
+    p_ag = sub.add_parser("set-agency", help="Set EDI flags for an agency")
+    p_ag.add_argument("agency")
+    p_ag.add_argument("--edi",      action="store_true", default=False)
+    p_ag.add_argument("--no-edi",   action="store_true", default=False)
+    p_ag.add_argument("--edi-notes", default=None, metavar="TEXT")
 
-    p_month = sub.add_parser("show-month", help="Show orders active in a billing month with flags")
+    p_adv = sub.add_parser("set-advertiser", help="Set notarized flag for an advertiser")
+    p_adv.add_argument("advertiser")
+    p_adv.add_argument("--notarized",    action="store_true", default=False)
+    p_adv.add_argument("--no-notarized", action="store_true", default=False)
+
+    p_month = sub.add_parser("show-month", help="Show orders active in a billing month")
     p_month.add_argument("month", metavar="YYYY-MM")
 
     args = parser.parse_args()
     db_path = Path(args.db)
-
     _ensure_db(db_path)
 
     with get_conn(db_path) as conn:
-        if args.command == "list":
-            cmd_list(conn, args)
-        elif args.command == "list-clients":
-            cmd_list_clients(conn, args)
-        elif args.command == "set":
-            cmd_set(conn, args)
+        if args.command == "list-agencies":
+            cmd_list_agencies(conn, args)
+        elif args.command == "list-advertisers":
+            cmd_list_advertisers(conn, args)
+        elif args.command == "set-agency":
+            cmd_set_agency(conn, args)
+        elif args.command == "set-advertiser":
+            cmd_set_advertiser(conn, args)
         elif args.command == "show-month":
             cmd_show_month(conn, args)
 
