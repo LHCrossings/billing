@@ -267,7 +267,7 @@ def parse_order_file(path: Path) -> dict | None:
         return None
 
     meta = parse_sales_confirmation(wb["Sales Confirmation"])
-    if not meta.get("contract_number"):
+    if not isinstance(meta.get("contract_number"), int):
         wb.close()
         return None
 

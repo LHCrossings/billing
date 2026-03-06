@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Iterator
 
 from order_parser import parse_order_file
-from orders_db import DB_PATH, get_conn, init_db, upsert_monthly, upsert_order
+from orders_db import DB_PATH, get_conn, get_order, init_db, upsert_monthly, upsert_order
 
 CLIENTS_DIR = Path(r"M:\Clients")
 SINCE_DATE = date(2024, 1, 1)
@@ -86,10 +86,10 @@ def main():
         db_path.parent.mkdir(parents=True, exist_ok=True)
         init_db(db_path)
 
-    total = skipped = errors = registered = 0
+    total = skipped = errors = registered = outdated = 0
 
     def process(conn=None):
-        nonlocal total, skipped, errors, registered
+        nonlocal total, skipped, errors, registered, outdated
         for path in iter_order_files(clients_dir, since):
             total += 1
             try:
@@ -105,6 +105,21 @@ def main():
 
             monthly = record.pop("_monthly")
             cn = record["contract_number"]
+            new_rev = record.get("revision") or 0
+
+            # Skip if a higher revision is already in the DB
+            if not args.dry_run and conn is not None:
+                existing = get_order(conn, cn)
+                if existing is not None:
+                    existing_rev = existing["revision"] or 0
+                    if existing_rev > new_rev:
+                        outdated += 1
+                        print(
+                            f"  [SKIP rev{new_rev}<rev{existing_rev}] "
+                            f"{path.name}"
+                        )
+                        continue
+
             advertiser = record.get("advertiser") or record.get("client") or "?"
             market = record.get("market") or "?"
             months_str = ", ".join(
@@ -132,6 +147,7 @@ def main():
     print(f"  Files scanned:          {total}")
     print(f"  Registered:             {registered}")
     print(f"  Skipped (not orders):   {skipped}")
+    print(f"  Skipped (older rev):    {outdated}")
     print(f"  Errors:                 {errors}")
 
 
