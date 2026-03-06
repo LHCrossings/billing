@@ -66,13 +66,14 @@ def cmd_list_agencies(conn, args):
         print("No orders in database.")
         return
 
-    print(f"{'AGENCY':<45} {'EDI':<6} EDI NOTES")
-    print("-" * 80)
+    print(f"{'AGENCY':<45} {'NOTARIZED':<11} {'EDI':<6} EDI NOTES")
+    print("-" * 85)
     for row in rows:
+        notarized = "YES" if row["notarized"] else "-"
         edi = "YES" if row["edi"] else "-"
         notes = row["edi_notes"] or ""
-        flag_note = " (not set)" if row["edi"] is None else ""
-        print(f"{row['agency']:<45} {edi:<6} {notes}{flag_note}")
+        flag_note = " (not set)" if row["edi"] is None and row["notarized"] is None else ""
+        print(f"{row['agency']:<45} {notarized:<11} {edi:<6} {notes}{flag_note}")
 
 
 def cmd_list_advertisers(conn, args):
@@ -100,17 +101,19 @@ def cmd_list_advertisers(conn, args):
 
 def cmd_set_agency(conn, args):
     agency = args.agency
+    notarized = True if args.notarized else (False if args.no_notarized else None)
     edi = True if args.edi else (False if args.no_edi else None)
     edi_notes = args.edi_notes
 
-    if edi is None and edi_notes is None:
-        print("Nothing to update. Provide --edi, --no-edi, or --edi-notes TEXT.")
+    if notarized is None and edi is None and edi_notes is None:
+        print("Nothing to update. Provide --notarized, --edi, --no-edi, or --edi-notes TEXT.")
         sys.exit(1)
 
-    set_agency_flags(conn, agency, edi=edi, edi_notes=edi_notes)
+    set_agency_flags(conn, agency, notarized=notarized, edi=edi, edi_notes=edi_notes)
     row = get_agency_flags(conn, agency)
     print(f"Updated agency: {agency}")
-    print(f"  EDI: {'YES' if row['edi'] else 'no'}")
+    print(f"  Notarized: {'YES' if row['notarized'] else 'no'}")
+    print(f"  EDI:       {'YES' if row['edi'] else 'no'}")
     if row["edi_notes"]:
         print(f"  EDI notes: {row['edi_notes']}")
 
@@ -144,7 +147,8 @@ def cmd_show_month(conn, args):
             om.market,
             om.gross,
             om.net,
-            af_adv.notarized,
+            MAX(COALESCE(af_adv.notarized, 0),
+                COALESCE(af_ag.notarized,  0)) AS notarized,
             af_ag.edi,
             af_ag.edi_notes
         FROM order_monthly om
@@ -198,11 +202,13 @@ def main():
     sub.add_parser("list-agencies",    help="List all agencies with EDI flag status")
     sub.add_parser("list-advertisers", help="List all advertisers with notarized flag status")
 
-    p_ag = sub.add_parser("set-agency", help="Set EDI flags for an agency")
+    p_ag = sub.add_parser("set-agency", help="Set flags for an agency")
     p_ag.add_argument("agency")
-    p_ag.add_argument("--edi",      action="store_true", default=False)
-    p_ag.add_argument("--no-edi",   action="store_true", default=False)
-    p_ag.add_argument("--edi-notes", default=None, metavar="TEXT")
+    p_ag.add_argument("--notarized",    action="store_true", default=False)
+    p_ag.add_argument("--no-notarized", action="store_true", default=False)
+    p_ag.add_argument("--edi",          action="store_true", default=False)
+    p_ag.add_argument("--no-edi",       action="store_true", default=False)
+    p_ag.add_argument("--edi-notes",    default=None, metavar="TEXT")
 
     p_adv = sub.add_parser("set-advertiser", help="Set notarized flag for an advertiser")
     p_adv.add_argument("advertiser")

@@ -31,6 +31,14 @@ def init_db(db_path: Path = DB_PATH):
         tables = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         ).fetchall()}
+        # Add notarized column to agency_flags if missing (added after initial schema)
+        if "agency_flags" in tables:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(agency_flags)").fetchall()}
+            if "notarized" not in cols:
+                conn.execute(
+                    "ALTER TABLE agency_flags ADD COLUMN notarized INTEGER NOT NULL DEFAULT 0"
+                )
+
         if "client_flags" in tables and "agency_flags" not in tables:
             conn.executescript("""
                 CREATE TABLE agency_flags (
@@ -78,6 +86,7 @@ def init_db(db_path: Path = DB_PATH):
 
             CREATE TABLE IF NOT EXISTS agency_flags (
                 agency      TEXT PRIMARY KEY,
+                notarized   INTEGER NOT NULL DEFAULT 0,
                 edi         INTEGER NOT NULL DEFAULT 0,
                 edi_notes   TEXT
             );
@@ -196,10 +205,13 @@ def get_agency_flags(conn: sqlite3.Connection, agency: str) -> sqlite3.Row | Non
 def set_agency_flags(
     conn: sqlite3.Connection,
     agency: str,
+    notarized: bool | None = None,
     edi: bool | None = None,
     edi_notes: str | None = None,
 ):
     updates = {}
+    if notarized is not None:
+        updates["notarized"] = int(notarized)
     if edi is not None:
         updates["edi"] = int(edi)
     if edi_notes is not None:
