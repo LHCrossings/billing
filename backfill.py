@@ -21,13 +21,26 @@ from order_parser import parse_order_file
 from orders_db import DB_PATH, get_conn, init_db, upsert_monthly, upsert_order
 
 CLIENTS_DIR = Path(r"M:\Clients")
-SINCE_DATE = date(2025, 1, 1)
+SINCE_DATE = date(2024, 1, 1)
+
+# Directories to skip entirely during the walk (case-insensitive match on directory name).
+# - WorldLink: Run Sheets in these files are recycled templates with stale data.
+#   Worldlink billing comes from Etere CSVs processed by worldlink.py, not order files.
+#   FUTURE: parse Worldlink Sales Confirmations for metadata only (client, contact, market),
+#   then populate order_monthly from worldlink.py output at billing time so Worldlink
+#   revenue appears in DB for reporting and validation.
+# - !!Archived Clients: old clients, not relevant for current billing
+# - !Sample Orders: templates, not real orders
+SKIP_DIRS = {"worldlink", "!!archived clients (more than 3 years old)", "!sample orders"}
 
 
 def iter_order_files(clients_dir: Path, since: date) -> Iterator[Path]:
     """Walk clients_dir, yield .xlsx files modified on or after since."""
     for root, dirs, files in os.walk(clients_dir):
-        dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+        dirs[:] = sorted(
+            d for d in dirs
+            if not d.startswith(".") and d.lower() not in SKIP_DIRS
+        )
         for fname in sorted(files):
             if not fname.lower().endswith(".xlsx"):
                 continue
