@@ -13,6 +13,8 @@ from pathlib import Path
 from aggregate import expected_billing_month, MONTH_NAMES
 
 WORLDLINK_DIR = Path(__file__).parent / "Worldlink"
+REPORTS_DIR   = Path(__file__).parent / "reports"
+PLACEMENT_CONFIRMATION_NAME = "placement-confirmation.csv"
 
 # Etere market name → standard market code (from EtereBridge config.ini)
 MARKET_REPLACEMENTS = {
@@ -220,6 +222,134 @@ def load_worldlink_csv(path: Path, contract: str, estimate: str) -> tuple[list[d
     return rows, warnings
 
 
+def load_placement_confirmation(path: Path) -> tuple[list[dict], list[str]]:
+    """
+    Parse a combined Etere placement-confirmation CSV (all Worldlink contracts in one file).
+
+    CSV structure:
+      Row 0: header block column names
+      Row 1: header block data ("Worldlink", "All", export date, ...)
+      Row 2: blank
+      Row 3: spot data column headers (COD_CONTRATTO1, committente, ...)
+      Row 4+: spot data rows — one row per aired spot
+
+    Contract (col AB) and bill code (col A) are read per-row from COD_CONTRATTO1
+    and committente respectively, since a single file covers multiple contracts.
+
+    Returns (rows, warnings).
+    """
+    warnings = []
+    rows = []
+
+    with open(path, "r", encoding="utf-8-sig") as f:
+        all_lines = list(csv.reader(f))
+
+    if len(all_lines) < 5:
+        warnings.append(f"{path.name}: too few rows, skipping")
+        return rows, warnings
+
+    col_headers = [h.strip() for h in all_lines[3]]
+    col_index = {name: i for i, name in enumerate(col_headers)}
+
+    def get(row: list, col_name: str, default: str = "") -> str:
+        idx = col_index.get(col_name)
+        if idx is None or idx >= len(row):
+            return default
+        return row[idx].strip()
+
+    for line_num, row in enumerate(all_lines[4:], start=5):
+        if not any(v.strip() for v in row):
+            continue
+
+        air_date_str = get(row, "dateschedule")
+        if not air_date_str or air_date_str.lower() == "unplaced":
+            continue
+
+        try:
+            air_date = datetime.strptime(air_date_str, "%m/%d/%Y").date()
+        except ValueError:
+            warnings.append(f"{path.name} line {line_num}: unparseable date '{air_date_str}'")
+            continue
+
+        contract  = get(row, "COD_CONTRATTO1")
+        committente = get(row, "committente")
+        bill_code = f"Worldlink:{committente}" if committente else "Worldlink"
+
+        timerange = get(row, "timerange2")
+        if "-" in timerange:
+            time_in_str, time_out_str = timerange.split("-", 1)
+        else:
+            time_in_str, time_out_str = timerange, ""
+        time_in  = parse_time(time_in_str)
+        time_out = parse_time(time_out_str)
+
+        try:
+            raw_secs = float(get(row, "duration3") or "0")
+            length = timedelta(seconds=round_to_15_seconds(raw_secs))
+        except ValueError:
+            length = timedelta(0)
+
+        gross = parse_gross(get(row, "IMPORTO2", "0"))
+
+        raw_market  = get(row, "nome2")
+        market_code = MARKET_REPLACEMENTS.get(raw_market, raw_market)
+        is_tac      = (market_code == "DAL")
+
+        spot_type = "COM" if gross > 0 else "BNS"
+
+        b_year, b_month = expected_billing_month(air_date, "Broadcast")
+        month_date = date(b_year, b_month, 15)
+
+        broker_fees = gross * WL_AGENCY_FEE
+        station_net = gross - broker_fees
+
+        try:
+            line_val = int(float(get(row, "id_contrattirighe") or "0"))
+        except ValueError:
+            line_val = 0
+        try:
+            spot_num = int(float(get(row, "Textbox14") or "1"))
+        except ValueError:
+            spot_num = 1
+
+        record = {
+            "A":  bill_code,
+            "B":  datetime(air_date.year, air_date.month, air_date.day),
+            "C":  datetime(air_date.year, air_date.month, air_date.day),
+            "D":  DAY_NAMES[air_date.weekday()],
+            "E":  time_in,
+            "F":  time_out,
+            "G":  length,
+            "H":  get(row, "bookingcode2"),
+            "I":  get(row, "airtimep"),
+            "J":  WL_LANGUAGE,
+            "K":  None,
+            "L":  spot_num,
+            "M":  line_val,
+            "N":  spot_type,
+            "O":  contract,
+            "P":  gross,
+            "Q":  market_code,
+            "R":  gross,
+            "S":  month_date,
+            "T":  broker_fees,
+            "U":  WL_PRIORITY,
+            "V":  station_net,
+            "W":  WL_SALES_PERSON,
+            "X":  WL_REVENUE_TYPE,
+            "Y":  WL_BILLING_TYPE,
+            "Z":  WL_AGENCY_FLAG,
+            "AA": WL_AFFIDAVIT,
+            "AB": contract,
+            "AC": "DAL" if is_tac else "Admin",
+            "_source_file": path.name,
+            "_is_worldlink": True,
+        }
+        rows.append(record)
+
+    return rows, warnings
+
+
 def sort_worldlink_rows(rows: list[dict]) -> list[dict]:
     """
     Sort Worldlink rows: contract (AB) -> market (Q, customer-visible) -> date (B) -> air time (I).
@@ -280,6 +410,7 @@ def load_all_worldlink(
     worldlink_dir: Path | None = None,
     billing_year: int | None = None,
     billing_month: int | None = None,
+    reports_dir: Path | None = None,
 ) -> tuple[list[dict], list[str]]:
     """
     Load and process all Worldlink CSV files.
@@ -290,6 +421,8 @@ def load_all_worldlink(
     """
     if worldlink_dir is None:
         worldlink_dir = WORLDLINK_DIR
+    if reports_dir is None:
+        reports_dir = REPORTS_DIR
 
     csv_files = sorted(worldlink_dir.glob("*.csv"))
     print(f"\nFound {len(csv_files)} Worldlink CSV files")
@@ -311,6 +444,17 @@ def load_all_worldlink(
         all_warnings.extend(warnings)
         print(f"  {path.name}: {len(rows)} rows (contract {contract}, est {estimate})")
         all_rows.extend(rows)
+
+    # --- Combined placement-confirmation export from reports/ ---
+    pc_path = reports_dir / PLACEMENT_CONFIRMATION_NAME
+    if pc_path.exists():
+        pc_rows, pc_warnings = load_placement_confirmation(pc_path)
+        all_warnings.extend(pc_warnings)
+        contracts_found = len({r["AB"] for r in pc_rows})
+        print(f"  {pc_path.name}: {len(pc_rows)} rows ({contracts_found} contracts)")
+        all_rows.extend(pc_rows)
+    else:
+        print(f"  (no {PLACEMENT_CONFIRMATION_NAME} in {reports_dir})")
 
     # --- Validation 2: DAL must not appear alongside other markets in same contract ---
     market_errors = validate_market_isolation(all_rows)
