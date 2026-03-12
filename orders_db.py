@@ -39,6 +39,29 @@ def init_db(db_path: Path = DB_PATH):
                     "ALTER TABLE agency_flags ADD COLUMN notarized INTEGER NOT NULL DEFAULT 0"
                 )
 
+        # Migrate order_monthly to include revenue_type in primary key
+        if "order_monthly" in tables:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(order_monthly)").fetchall()}
+            if "revenue_type" not in cols:
+                conn.executescript("""
+                    CREATE TABLE order_monthly_new (
+                        contract_number INTEGER NOT NULL
+                            REFERENCES orders(contract_number) ON DELETE CASCADE,
+                        year            INTEGER NOT NULL,
+                        month           INTEGER NOT NULL,
+                        market          TEXT    NOT NULL,
+                        revenue_type    TEXT    NOT NULL DEFAULT '',
+                        gross           REAL    NOT NULL DEFAULT 0,
+                        net             REAL    NOT NULL DEFAULT 0,
+                        PRIMARY KEY (contract_number, year, month, market, revenue_type)
+                    );
+                    INSERT INTO order_monthly_new
+                        SELECT contract_number, year, month, market, '', gross, net
+                        FROM order_monthly;
+                    DROP TABLE order_monthly;
+                    ALTER TABLE order_monthly_new RENAME TO order_monthly;
+                """)
+
         if "client_flags" in tables and "agency_flags" not in tables:
             conn.executescript("""
                 CREATE TABLE agency_flags (
@@ -102,9 +125,10 @@ def init_db(db_path: Path = DB_PATH):
                 year            INTEGER NOT NULL,
                 month           INTEGER NOT NULL,
                 market          TEXT    NOT NULL,
+                revenue_type    TEXT    NOT NULL DEFAULT '',
                 gross           REAL    NOT NULL DEFAULT 0,
                 net             REAL    NOT NULL DEFAULT 0,
-                PRIMARY KEY (contract_number, year, month, market)
+                PRIMARY KEY (contract_number, year, month, market, revenue_type)
             );
 
             CREATE TABLE IF NOT EXISTS affidavits (
@@ -191,9 +215,11 @@ def upsert_monthly(conn: sqlite3.Connection, contract_number: int, monthly: list
         "DELETE FROM order_monthly WHERE contract_number = ?",
         (contract_number,)
     )
+    for row in monthly:
+        row.setdefault("revenue_type", "")
     conn.executemany("""
-        INSERT INTO order_monthly (contract_number, year, month, market, gross, net)
-        VALUES (:contract_number, :year, :month, :market, :gross, :net)
+        INSERT INTO order_monthly (contract_number, year, month, market, revenue_type, gross, net)
+        VALUES (:contract_number, :year, :month, :market, :revenue_type, :gross, :net)
     """, monthly)
 
 

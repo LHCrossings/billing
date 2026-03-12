@@ -204,8 +204,8 @@ def compute_monthly_from_runsheet(
     Returns list of {year, month, gross, net}, sorted by (year, month).
     Skips header row and blank rows. Skips rows where P == 0.
     """
-    # Key: (year, month, market)
-    monthly: dict[tuple[int, int, str], float] = {}
+    # Key: (year, month, market, revenue_type)
+    monthly: dict[tuple[int, int, str, str], float] = {}
     first_row = True
 
     for row_vals in ws.iter_rows(values_only=True):
@@ -239,13 +239,17 @@ def compute_monthly_from_runsheet(
 
         year, month = ym
         market = str(record.get("AC") or "").strip() or "Unknown"
-        key = (year, month, market)
+        revenue_type = str(record.get("X") or "").strip()
+        key = (year, month, market, revenue_type)
         monthly[key] = monthly.get(key, 0.0) + float(gross_raw)
 
     result = []
-    for (year, month, market), gross in sorted(monthly.items()):
+    for (year, month, market, revenue_type), gross in sorted(monthly.items()):
         net = gross * (1 - agency_discount)
-        result.append({"year": year, "month": month, "market": market, "gross": gross, "net": net})
+        result.append({
+            "year": year, "month": month, "market": market,
+            "revenue_type": revenue_type, "gross": gross, "net": net,
+        })
     return result
 
 

@@ -109,16 +109,18 @@ def load_actual_from_logs(logs_dir: Path, year: int, month: int) -> tuple[dict, 
 def load_expected_from_db(conn, year: int, month: int) -> dict[tuple[int, str], tuple[float, str, str]]:
     """
     Load expected monthly amounts from the DB for the given month.
+    Sums across revenue types so each (contract, market) has one total.
 
     Returns:
         {(contract_number, market): (expected_gross, advertiser, agency)}
     """
     rows = conn.execute("""
-        SELECT om.contract_number, om.market, om.gross,
+        SELECT om.contract_number, om.market, SUM(om.gross) AS gross,
                o.advertiser, o.client AS agency
         FROM order_monthly om
         JOIN orders o ON o.contract_number = om.contract_number
         WHERE om.year = ? AND om.month = ?
+        GROUP BY om.contract_number, om.market, o.advertiser, o.client
     """, (year, month)).fetchall()
 
     return {
