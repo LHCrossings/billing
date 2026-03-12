@@ -6,12 +6,15 @@ Notarization is an advertiser-level setting (the client requires a notarized aff
 which also drives which affidavit template is used).
 
 Commands:
-    list-agencies                         List all agencies with EDI flags
-    list-advertisers                      List all advertisers with notarized flags
-    set-agency   <agency>   [options]     Set EDI flags for an agency
-    set-advertiser <advertiser> [options] Set notarized flag for an advertiser
-    show-month   <YYYY-MM>                Show all orders active in a billing month
-    remove-order <contract_number>        Remove an order and its monthly data from the DB
+    show         <contract> [--field NAME]  Show all fields for an order (or one field)
+    monthly      <contract>                 Show monthly gross breakdown for an order
+    search       <text>                     Search by client, advertiser, or estimate
+    list-agencies                           List all agencies with EDI flags
+    list-advertisers                        List all advertisers with notarized flags
+    set-agency   <agency>   [options]       Set EDI flags for an agency
+    set-advertiser <advertiser> [options]   Set notarized flag for an advertiser
+    show-month   <YYYY-MM>                  Show all orders active in a billing month
+    remove-order <contract_number>          Remove an order and its monthly data from the DB
 
 set-agency options:
     --edi / --no-edi        Invoice delivered via EDI upload
@@ -21,6 +24,10 @@ set-advertiser options:
     --notarized / --no-notarized    Affidavit requires notarization (different template)
 
 Examples:
+    uv run python manage_db.py show 2557
+    uv run python manage_db.py show 2557 --field client
+    uv run python manage_db.py monthly 2557
+    uv run python manage_db.py search "Muckleshoot"
     uv run python manage_db.py list-agencies
     uv run python manage_db.py list-advertisers
     uv run python manage_db.py set-agency "Admerasia Inc." --edi --edi-notes "Mediaocean"
@@ -30,6 +37,7 @@ Examples:
 """
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -44,6 +52,100 @@ from orders_db import (
     set_advertiser_flags,
     set_agency_flags,
 )
+
+
+ORDER_FIELDS = [
+    "contract_number", "client", "advertiser", "contact",
+    "address", "city", "state", "zip", "phone", "fax",
+    "emails", "billing_type", "market", "estimate", "notes",
+    "agency_discount", "station_rep", "revision", "date_order_written",
+    "total_gross", "total_net", "last_updated", "file_path",
+]
+
+
+def cmd_show(conn, args):
+    row = conn.execute(
+        "SELECT * FROM orders WHERE contract_number = ?", (args.contract,)
+    ).fetchone()
+
+    if row is None:
+        print(f"No order found for contract {args.contract}.")
+        sys.exit(1)
+
+    if args.field:
+        field = args.field.lower()
+        if field not in ORDER_FIELDS:
+            print(f"Unknown field '{field}'. Available: {', '.join(ORDER_FIELDS)}")
+            sys.exit(1)
+        val = row[field]
+        if field == "emails":
+            try:
+                val = ", ".join(json.loads(val or "[]"))
+            except Exception:
+                pass
+        print(val if val is not None else "(empty)")
+    else:
+        print(f"\n{'─' * 50}")
+        print(f"  Contract {row['contract_number']}  —  {row['advertiser'] or '?'}  /  {row['client'] or '?'}")
+        print(f"{'─' * 50}")
+        for field in ORDER_FIELDS:
+            if field in ("contract_number", "file_path"):
+                continue
+            val = row[field]
+            if field == "emails":
+                try:
+                    val = ", ".join(json.loads(val or "[]"))
+                except Exception:
+                    pass
+            if val is not None and val != "":
+                print(f"  {field.replace('_', ' ').title():<22} {val}")
+        print(f"\n  File: {row['file_path']}")
+        print()
+
+
+def cmd_monthly(conn, args):
+    order = conn.execute(
+        "SELECT advertiser, client FROM orders WHERE contract_number = ?", (args.contract,)
+    ).fetchone()
+    if order is None:
+        print(f"No order found for contract {args.contract}.")
+        sys.exit(1)
+
+    rows = conn.execute("""
+        SELECT year, month, market, gross, net
+        FROM order_monthly
+        WHERE contract_number = ?
+        ORDER BY year, month, market
+    """, (args.contract,)).fetchall()
+
+    print(f"\n  Monthly breakdown — contract {args.contract}  ({order['advertiser'] or '?'} / {order['client'] or '?'})\n")
+    print(f"  {'Month':<12} {'Market':<8} {'Gross':>12}  {'Net':>12}")
+    print(f"  {'─' * 50}")
+    for r in rows:
+        print(f"  {r['year']}-{r['month']:02d}  {r['market']:<8} ${r['gross']:>11,.2f}  ${r['net']:>11,.2f}")
+    if not rows:
+        print("  (no monthly data)")
+    print()
+
+
+def cmd_search(conn, args):
+    term = f"%{args.text}%"
+    rows = conn.execute("""
+        SELECT contract_number, advertiser, client, market, estimate
+        FROM orders
+        WHERE client LIKE ? OR advertiser LIKE ? OR estimate LIKE ?
+        ORDER BY client, advertiser, contract_number
+    """, (term, term, term)).fetchall()
+
+    if not rows:
+        print(f"No orders matching '{args.text}'.")
+        return
+
+    print(f"\n  {'Contract':<12} {'Advertiser':<28} {'Client':<28} {'Market':<8} Estimate")
+    print(f"  {'─' * 90}")
+    for r in rows:
+        print(f"  {r['contract_number']:<12} {(r['advertiser'] or ''):<28} {(r['client'] or ''):<28} {(r['market'] or ''):<8} {r['estimate'] or ''}")
+    print()
 
 
 def _ensure_db(db_path: Path):
@@ -241,6 +343,16 @@ def main():
     sub = parser.add_subparsers(dest="command")
     sub.required = True
 
+    p_show = sub.add_parser("show", help="Show order details")
+    p_show.add_argument("contract", type=int)
+    p_show.add_argument("--field", default=None, help="Show a single field only")
+
+    p_monthly = sub.add_parser("monthly", help="Show monthly gross breakdown")
+    p_monthly.add_argument("contract", type=int)
+
+    p_search = sub.add_parser("search", help="Search by client, advertiser, or estimate")
+    p_search.add_argument("text")
+
     sub.add_parser("list-agencies",    help="List all agencies with EDI flag status")
     sub.add_parser("list-advertisers", help="List all advertisers with notarized flag status")
 
@@ -268,7 +380,13 @@ def main():
     _ensure_db(db_path)
 
     with get_conn(db_path) as conn:
-        if args.command == "list-agencies":
+        if args.command == "show":
+            cmd_show(conn, args)
+        elif args.command == "monthly":
+            cmd_monthly(conn, args)
+        elif args.command == "search":
+            cmd_search(conn, args)
+        elif args.command == "list-agencies":
             cmd_list_agencies(conn, args)
         elif args.command == "list-advertisers":
             cmd_list_advertisers(conn, args)

@@ -159,9 +159,10 @@ def parse_sales_confirmation(ws) -> dict:
                 v = _cell(row, 15)
                 if isinstance(v, (int, float)):
                     result["total_net"] = float(v)
-                # Notes live in col B of this same row
-                notes = col_b
-                if notes and notes not in ("Additional Notes",):
+
+            if col_b == "Additional Notes":
+                notes = _str(col_d)
+                if notes:
                     result["notes"] = notes
 
         # After header: look for MONTHLY BREAKDOWN marker
