@@ -168,28 +168,19 @@ def cmd_register(conn, args):
         print(f"File not found: {path}")
         sys.exit(1)
 
-    record = parse_order_file(path)
-    if record is None:
+    records = parse_order_file(path)
+    if records is None:
         print("Not a valid order file (missing required sheets or contract number).")
         sys.exit(1)
 
-    monthly = record.pop("_monthly")
-    cn = record["contract_number"]
-
-    from collections import defaultdict
-    monthly_by_cn: dict[int, list] = defaultdict(list)
-    for m in monthly:
-        monthly_by_cn[m["contract_number"]].append(m)
-
-    upsert_order(conn, record)
-    for group_cn, group_rows in monthly_by_cn.items():
-        upsert_monthly(conn, group_cn, group_rows)
-
-    print(f"Registered contract {cn}  —  {record.get('advertiser') or '?'} / {record.get('client') or '?'}")
-    print(f"  Market: {record.get('market') or '?'}   Estimate: {record.get('estimate') or '?'}")
-    extra = [c for c in monthly_by_cn if c != cn]
-    print(f"  Monthly rows: {len(monthly_by_cn.get(cn, []))} for contract {cn}" +
-          (f"; also registered monthly for: {', '.join(str(c) for c in sorted(extra))}" if extra else ""))
+    for record in records:
+        monthly = record.pop("_monthly")
+        cn = record["contract_number"]
+        upsert_order(conn, record)
+        upsert_monthly(conn, cn, monthly)
+        print(f"Registered contract {cn}  —  {record.get('advertiser') or '?'} / {record.get('client') or '?'}")
+        print(f"  Market: {record.get('market') or '?'}   Estimate: {record.get('estimate') or '?'}")
+        print(f"  Monthly rows: {len(monthly)}")
 
 
 def cmd_affidavit(conn, args):

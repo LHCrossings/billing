@@ -263,14 +263,19 @@ def compute_monthly_from_runsheet(
     return result
 
 
-def parse_order_file(path: Path, metadata_only: bool = False) -> dict | None:
+def parse_order_file(path: Path, metadata_only: bool = False) -> list[dict] | None:
     """
     Parse one order Excel file.
-    Returns a dict ready for orders_db.upsert_order / upsert_monthly, or None if
-    the file is not an order file (missing required sheets or contract number).
+    Returns a list of dicts ready for orders_db.upsert_order / upsert_monthly, or None
+    if the file is not an order file (missing required sheets or no contract numbers).
 
-    The returned dict contains a '_monthly' key with the per-month breakout list.
+    Each dict contains a '_monthly' key with per-month breakout rows for that contract.
     Callers must pop '_monthly' before passing to upsert_order.
+
+    Most files return a single-element list. Files where the Sales Confirmation has a
+    non-integer contract number (e.g. a range "2171-2181") are treated as multi-contract:
+    unique contract numbers are read from col AB of the Run Sheet and one record is
+    returned per contract, all sharing the same metadata.
 
     If metadata_only=True, the Run Sheet is skipped and '_monthly' is always empty.
     Use this for Worldlink orders where monthly revenue comes from Etere CSVs instead.
@@ -289,10 +294,6 @@ def parse_order_file(path: Path, metadata_only: bool = False) -> dict | None:
         return None
 
     meta = parse_sales_confirmation(wb["Sales Confirmation"])
-    if not isinstance(meta.get("contract_number"), int):
-        wb.close()
-        return None
-
     billing_type = meta["billing_type"] or "Broadcast"
     agency_discount = meta["agency_discount"] or 0.15
 
@@ -302,36 +303,59 @@ def parse_order_file(path: Path, metadata_only: bool = False) -> dict | None:
         monthly = compute_monthly_from_runsheet(wb["Run Sheet"], billing_type, agency_discount)
     wb.close()
 
-    cn = meta["contract_number"]
-    # Each monthly row carries its own contract_number from col AB.
-    # Fall back to the Sales Confirmation header contract if col AB was blank on that row.
-    for row in monthly:
-        if not row.get("contract_number"):
-            row["contract_number"] = cn
+    def _base_record(cn: int) -> dict:
+        return {
+            "contract_number": cn,
+            "file_path": str(path),
+            "client": meta["client"],
+            "advertiser": meta["advertiser"],
+            "contact": meta["contact"],
+            "address": meta["address"],
+            "city": meta["city"],
+            "state": meta["state"],
+            "zip": meta["zip"],
+            "phone": meta["phone"],
+            "fax": meta["fax"],
+            "billing_type": meta["billing_type"],
+            "market": meta["market"],
+            "estimate": meta["estimate"],
+            "notes": meta["notes"],
+            "agency_discount": agency_discount,
+            "date_order_written": meta["date_order_written"],
+            "revision": meta["revision"],
+            "station_rep": meta["station_rep"],
+            "emails": json.dumps(meta["emails"]),
+            "total_gross": meta["total_gross"],
+            "total_net": meta["total_net"],
+            "last_updated": datetime.now().isoformat(),
+        }
 
-    return {
-        "contract_number": cn,
-        "file_path": str(path),
-        "client": meta["client"],
-        "advertiser": meta["advertiser"],
-        "contact": meta["contact"],
-        "address": meta["address"],
-        "city": meta["city"],
-        "state": meta["state"],
-        "zip": meta["zip"],
-        "phone": meta["phone"],
-        "fax": meta["fax"],
-        "billing_type": meta["billing_type"],
-        "market": meta["market"],
-        "estimate": meta["estimate"],
-        "notes": meta["notes"],
-        "agency_discount": agency_discount,
-        "date_order_written": meta["date_order_written"],
-        "revision": meta["revision"],
-        "station_rep": meta["station_rep"],
-        "emails": json.dumps(meta["emails"]),
-        "total_gross": meta["total_gross"],
-        "total_net": meta["total_net"],
-        "last_updated": datetime.now().isoformat(),
-        "_monthly": monthly,
-    }
+    if isinstance(meta.get("contract_number"), int):
+        # Normal single-contract file
+        cn = meta["contract_number"]
+        for row in monthly:
+            if not row.get("contract_number"):
+                row["contract_number"] = cn
+        record = _base_record(cn)
+        record["_monthly"] = monthly
+        return [record]
+
+    # Multi-contract file: Sales Confirmation has a range/list instead of a single integer.
+    # Derive contract numbers from col AB of the Run Sheet.
+    unique_contracts: list[int] = []
+    seen: set[int] = set()
+    for row in monthly:
+        cn = row.get("contract_number")
+        if isinstance(cn, int) and cn not in seen:
+            unique_contracts.append(cn)
+            seen.add(cn)
+
+    if not unique_contracts:
+        return None
+
+    records = []
+    for cn in unique_contracts:
+        record = _base_record(cn)
+        record["_monthly"] = [r for r in monthly if r.get("contract_number") == cn]
+        records.append(record)
+    return records

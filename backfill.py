@@ -108,63 +108,41 @@ def main():
                 skipped += 1
                 continue
 
-            monthly = record.pop("_monthly")
-            cn = record["contract_number"]
-            new_rev = record.get("revision") or 0
+            # parse_order_file returns a list (one entry per contract)
+            for rec in record:
+                monthly = rec.pop("_monthly")
+                cn = rec["contract_number"]
+                new_rev = rec.get("revision") or 0
 
-            # Skip if a higher revision is already in the DB
-            if not args.dry_run and conn is not None:
-                existing = get_order(conn, cn)
-                if existing is not None:
-                    existing_rev = existing["revision"] or 0
-                    if existing_rev > new_rev:
-                        outdated += 1
-                        print(
-                            f"  [SKIP rev{new_rev}<rev{existing_rev}] "
-                            f"{path.name}"
-                        )
-                        continue
-
-
-            # Group monthly rows by their own contract_number (supports multi-contract run sheets)
-            from collections import defaultdict
-            monthly_by_cn: dict[int, list] = defaultdict(list)
-            for m in monthly:
-                monthly_by_cn[m["contract_number"]].append(m)
-
-            extra_contracts = [c for c in monthly_by_cn if c != cn]
-
-            advertiser = record.get("advertiser") or record.get("client") or "?"
-            market = record.get("market") or "?"
-            months_str = ", ".join(
-                f"{m['year']}-{m['month']:02d}=${m['gross']:,.2f}"
-                for m in monthly_by_cn.get(cn, [])
-            )
-            print(
-                f"  [{cn}] {advertiser} | {market} | "
-                f"{len(monthly_by_cn.get(cn, []))} month(s): {months_str or '(none)'}"
-            )
-            for extra_cn in sorted(extra_contracts):
-                extra_rows = monthly_by_cn[extra_cn]
-                extra_str = ", ".join(
-                    f"{m['year']}-{m['month']:02d}=${m['gross']:,.2f}" for m in extra_rows
-                )
-                print(f"    + [{extra_cn}] {len(extra_rows)} month(s): {extra_str}")
-
-            if not args.dry_run and conn is not None:
-                upsert_order(conn, record)
-                for group_cn, group_rows in monthly_by_cn.items():
-                    if group_cn != cn:
-                        # Extra contract from run sheet — only upsert if already registered
-                        exists = conn.execute(
-                            "SELECT 1 FROM orders WHERE contract_number = ?", (group_cn,)
-                        ).fetchone()
-                        if not exists:
-                            print(f"    ! [{group_cn}] not in orders table yet — monthly data skipped (register its order file first)")
+                # Skip if a higher revision is already in the DB
+                if not args.dry_run and conn is not None:
+                    existing = get_order(conn, cn)
+                    if existing is not None:
+                        existing_rev = existing["revision"] or 0
+                        if existing_rev > new_rev:
+                            outdated += 1
+                            print(
+                                f"  [SKIP rev{new_rev}<rev{existing_rev}] "
+                                f"{path.name}"
+                            )
                             continue
-                    upsert_monthly(conn, group_cn, group_rows)
 
-            registered += 1
+                advertiser = rec.get("advertiser") or rec.get("client") or "?"
+                market = rec.get("market") or "?"
+                months_str = ", ".join(
+                    f"{m['year']}-{m['month']:02d}=${m['gross']:,.2f}"
+                    for m in monthly
+                )
+                print(
+                    f"  [{cn}] {advertiser} | {market} | "
+                    f"{len(monthly)} month(s): {months_str or '(none)'}"
+                )
+
+                if not args.dry_run and conn is not None:
+                    upsert_order(conn, rec)
+                    upsert_monthly(conn, cn, monthly)
+
+                registered += 1
 
     if args.dry_run:
         process()
