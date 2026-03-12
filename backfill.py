@@ -154,6 +154,14 @@ def main():
             if not args.dry_run and conn is not None:
                 upsert_order(conn, record)
                 for group_cn, group_rows in monthly_by_cn.items():
+                    if group_cn != cn:
+                        # Extra contract from run sheet — only upsert if already registered
+                        exists = conn.execute(
+                            "SELECT 1 FROM orders WHERE contract_number = ?", (group_cn,)
+                        ).fetchone()
+                        if not exists:
+                            print(f"    ! [{group_cn}] not in orders table yet — monthly data skipped (register its order file first)")
+                            continue
                     upsert_monthly(conn, group_cn, group_rows)
 
             registered += 1
