@@ -157,18 +157,7 @@ def main():
                     # Only overwrite order metadata if this file's revenue types don't
                     # conflict with existing monthly rows (prevents production order files
                     # from clobbering airtime order metadata for the same contract).
-                    existing_rev_types = {
-                        r[0] for r in conn.execute(
-                            "SELECT DISTINCT revenue_type FROM order_monthly WHERE contract_number = ?",
-                            (cn,)
-                        ).fetchall()
-                    }
-                    new_rev_types = {m.get("revenue_type") for m in monthly_by_cn.get(cn, [])}
-                    if not existing_rev_types or existing_rev_types & new_rev_types:
-                        upsert_order(conn, rec)
-                    else:
-                        print(f"    [metadata skip] {cn} already has {existing_rev_types}; new file has {new_rev_types}")
-
+                    upsert_order(conn, rec)
                     for group_cn, group_rows in monthly_by_cn.items():
                         if group_cn != cn:
                             exists = conn.execute(

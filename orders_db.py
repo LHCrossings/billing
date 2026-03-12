@@ -210,13 +210,22 @@ def upsert_order(conn: sqlite3.Connection, record: dict):
 
 
 def upsert_monthly(conn: sqlite3.Connection, contract_number: int, monthly: list[dict]):
-    """Replace all monthly rows for a contract."""
-    conn.execute(
-        "DELETE FROM order_monthly WHERE contract_number = ?",
-        (contract_number,)
-    )
+    """Replace monthly rows for a contract, scoped to the revenue types in the batch.
+
+    Only rows matching the incoming revenue types are deleted before re-inserting,
+    so airtime and production monthly rows coexist without overwriting each other.
+    If the batch is empty, nothing is touched.
+    """
+    if not monthly:
+        return
     for row in monthly:
         row.setdefault("revenue_type", "")
+    revenue_types = list({row["revenue_type"] for row in monthly})
+    placeholders = ",".join("?" * len(revenue_types))
+    conn.execute(
+        f"DELETE FROM order_monthly WHERE contract_number = ? AND revenue_type IN ({placeholders})",
+        (contract_number, *revenue_types),
+    )
     conn.executemany("""
         INSERT INTO order_monthly (contract_number, year, month, market, revenue_type, gross, net)
         VALUES (:contract_number, :year, :month, :market, :revenue_type, :gross, :net)
