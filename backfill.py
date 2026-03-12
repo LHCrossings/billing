@@ -24,23 +24,28 @@ CLIENTS_DIR = Path(r"M:\Clients")
 SINCE_DATE = date(2024, 1, 1)
 
 # Directories to skip entirely during the walk (case-insensitive match on directory name).
-# - WorldLink: Run Sheets in these files are recycled templates with stale data.
-#   Worldlink billing comes from Etere CSVs processed by worldlink.py, not order files.
-#   FUTURE: parse Worldlink Sales Confirmations for metadata only (client, contact, market),
-#   then populate order_monthly from worldlink.py output at billing time so Worldlink
-#   revenue appears in DB for reporting and validation.
 # - !!Archived Clients: old clients, not relevant for current billing
 # - !Sample Orders: templates, not real orders
-SKIP_DIRS = {"worldlink", "!!archived clients (more than 3 years old)", "!sample orders"}
+# Note: Worldlink is NOT skipped — Sales Confirmations are parsed for metadata (contract
+# number, estimate, client, market, etc.) but Run Sheets are ignored since their line data
+# is stale. Monthly revenue for Worldlink comes from Etere CSVs via worldlink.py.
+SKIP_DIRS = {"!!archived clients (more than 3 years old)", "!sample orders"}
+
+# Directories whose order files should be parsed for metadata only (Run Sheet skipped).
+METADATA_ONLY_DIRS = {"worldlink"}
 
 
-def iter_order_files(clients_dir: Path, since: date) -> Iterator[Path]:
-    """Walk clients_dir, yield .xlsx files modified on or after since."""
+def iter_order_files(clients_dir: Path, since: date) -> Iterator[tuple[Path, bool]]:
+    """Walk clients_dir, yield (path, metadata_only) for .xlsx files modified on or after since."""
     for root, dirs, files in os.walk(clients_dir):
         dirs[:] = sorted(
             d for d in dirs
             if not d.startswith(".") and d.lower() not in SKIP_DIRS
         )
+        # metadata_only if any ancestor directory matches METADATA_ONLY_DIRS
+        root_parts = {p.lower() for p in Path(root).parts}
+        metadata_only = bool(root_parts & METADATA_ONLY_DIRS)
+
         for fname in sorted(files):
             if not fname.lower().endswith(".xlsx"):
                 continue
@@ -50,7 +55,7 @@ def iter_order_files(clients_dir: Path, since: date) -> Iterator[Path]:
             except OSError:
                 continue
             if mtime >= since:
-                yield path
+                yield path, metadata_only
 
 
 def main():
@@ -90,10 +95,10 @@ def main():
 
     def process(conn=None):
         nonlocal total, skipped, errors, registered, outdated
-        for path in iter_order_files(clients_dir, since):
+        for path, metadata_only in iter_order_files(clients_dir, since):
             total += 1
             try:
-                record = parse_order_file(path)
+                record = parse_order_file(path, metadata_only=metadata_only)
             except Exception as e:
                 print(f"  ERROR  {path.name}: {e}")
                 errors += 1

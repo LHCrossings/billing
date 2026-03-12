@@ -249,7 +249,7 @@ def compute_monthly_from_runsheet(
     return result
 
 
-def parse_order_file(path: Path) -> dict | None:
+def parse_order_file(path: Path, metadata_only: bool = False) -> dict | None:
     """
     Parse one order Excel file.
     Returns a dict ready for orders_db.upsert_order / upsert_monthly, or None if
@@ -257,13 +257,20 @@ def parse_order_file(path: Path) -> dict | None:
 
     The returned dict contains a '_monthly' key with the per-month breakout list.
     Callers must pop '_monthly' before passing to upsert_order.
+
+    If metadata_only=True, the Run Sheet is skipped and '_monthly' is always empty.
+    Use this for Worldlink orders where monthly revenue comes from Etere CSVs instead.
     """
     try:
         wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
     except Exception:
         return None
 
-    if "Sales Confirmation" not in wb.sheetnames or "Run Sheet" not in wb.sheetnames:
+    if "Sales Confirmation" not in wb.sheetnames:
+        wb.close()
+        return None
+
+    if not metadata_only and "Run Sheet" not in wb.sheetnames:
         wb.close()
         return None
 
@@ -275,7 +282,10 @@ def parse_order_file(path: Path) -> dict | None:
     billing_type = meta["billing_type"] or "Broadcast"
     agency_discount = meta["agency_discount"] or 0.15
 
-    monthly = compute_monthly_from_runsheet(wb["Run Sheet"], billing_type, agency_discount)
+    if metadata_only:
+        monthly = []
+    else:
+        monthly = compute_monthly_from_runsheet(wb["Run Sheet"], billing_type, agency_discount)
     wb.close()
 
     cn = meta["contract_number"]
