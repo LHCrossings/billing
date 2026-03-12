@@ -106,6 +106,40 @@ def init_db(db_path: Path = DB_PATH):
                 net             REAL    NOT NULL DEFAULT 0,
                 PRIMARY KEY (contract_number, year, month, market)
             );
+
+            CREATE TABLE IF NOT EXISTS affidavits (
+                affidavit_number  TEXT    PRIMARY KEY,
+                contract_number   INTEGER REFERENCES orders(contract_number) ON DELETE SET NULL,
+                bill_code         TEXT,
+                estimate          TEXT,
+                year              INTEGER NOT NULL,
+                month             INTEGER NOT NULL,
+                market            TEXT    NOT NULL,
+                status            TEXT    NOT NULL DEFAULT 'draft',
+                pre_bill          INTEGER NOT NULL DEFAULT 0,
+                spot_count        INTEGER,
+                gross_total       REAL,
+                created_at        TEXT,
+                updated_at        TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS affidavit_lines (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                affidavit_number  TEXT    NOT NULL
+                    REFERENCES affidavits(affidavit_number) ON DELETE CASCADE,
+                bill_code         TEXT,
+                air_date          TEXT,
+                air_time          TEXT,
+                length            TEXT,
+                program           TEXT,
+                line_type         TEXT,
+                gross             REAL,
+                net               REAL,
+                market            TEXT,
+                contract_number   INTEGER,
+                estimate          TEXT,
+                source_file       TEXT
+            );
         """)
 
 
@@ -247,3 +281,104 @@ def get_order(conn: sqlite3.Connection, contract_number: int) -> sqlite3.Row | N
     return conn.execute(
         "SELECT * FROM orders WHERE contract_number = ?", (contract_number,)
     ).fetchone()
+
+
+# --- Affidavits ---
+
+def upsert_affidavit(conn: sqlite3.Connection, record: dict):
+    """Insert or replace an affidavit header record."""
+    from datetime import datetime
+    now = datetime.now().isoformat()
+    record.setdefault("created_at", now)
+    record["updated_at"] = now
+    conn.execute("""
+        INSERT INTO affidavits (
+            affidavit_number, contract_number, bill_code, estimate,
+            year, month, market, status, pre_bill, spot_count, gross_total,
+            created_at, updated_at
+        ) VALUES (
+            :affidavit_number, :contract_number, :bill_code, :estimate,
+            :year, :month, :market, :status, :pre_bill, :spot_count, :gross_total,
+            :created_at, :updated_at
+        )
+        ON CONFLICT(affidavit_number) DO UPDATE SET
+            contract_number=excluded.contract_number,
+            bill_code=excluded.bill_code,
+            estimate=excluded.estimate,
+            year=excluded.year,
+            month=excluded.month,
+            market=excluded.market,
+            status=excluded.status,
+            pre_bill=excluded.pre_bill,
+            spot_count=excluded.spot_count,
+            gross_total=excluded.gross_total,
+            updated_at=excluded.updated_at
+    """, record)
+
+
+def upsert_affidavit_lines(conn: sqlite3.Connection, affidavit_number: str, lines: list[dict]):
+    """Replace all lines for an affidavit."""
+    conn.execute("DELETE FROM affidavit_lines WHERE affidavit_number = ?", (affidavit_number,))
+    for line in lines:
+        line["affidavit_number"] = affidavit_number
+    conn.executemany("""
+        INSERT INTO affidavit_lines (
+            affidavit_number, bill_code, air_date, air_time, length, program,
+            line_type, gross, net, market, contract_number, estimate, source_file
+        ) VALUES (
+            :affidavit_number, :bill_code, :air_date, :air_time, :length, :program,
+            :line_type, :gross, :net, :market, :contract_number, :estimate, :source_file
+        )
+    """, lines)
+
+
+def get_affidavit(conn: sqlite3.Connection, affidavit_number: str) -> sqlite3.Row | None:
+    """Return the affidavit header for the given number."""
+    return conn.execute(
+        "SELECT * FROM affidavits WHERE affidavit_number = ?", (affidavit_number,)
+    ).fetchone()
+
+
+def get_affidavit_lines(conn: sqlite3.Connection, affidavit_number: str) -> list[sqlite3.Row]:
+    """Return all spot lines for the given affidavit."""
+    return conn.execute(
+        "SELECT * FROM affidavit_lines WHERE affidavit_number = ? ORDER BY air_date, air_time",
+        (affidavit_number,)
+    ).fetchall()
+
+
+def get_affidavits_for_month(conn: sqlite3.Connection, year: int, month: int) -> list[sqlite3.Row]:
+    """Return all affidavit headers for a billing month, joined with order info."""
+    return conn.execute("""
+        SELECT a.*, o.advertiser, o.client
+        FROM affidavits a
+        LEFT JOIN orders o ON o.contract_number = a.contract_number
+        WHERE a.year = ? AND a.month = ?
+        ORDER BY a.pre_bill DESC, a.affidavit_number
+    """, (year, month)).fetchall()
+
+
+def next_affidavit_number(
+    conn: sqlite3.Connection, year: int, month: int, pre_bill: bool = False
+) -> str:
+    """
+    Compute the next available affidavit number for the given month.
+    Regular: YYMM-001 through YYMM-499.
+    Pre-bill: YYMM-500+.
+    """
+    yymm = f"{year % 100:02d}{month:02d}"
+    if pre_bill:
+        row = conn.execute("""
+            SELECT MAX(CAST(SUBSTR(affidavit_number, 6) AS INTEGER)) AS max_seq
+            FROM affidavits
+            WHERE affidavit_number LIKE ? AND pre_bill = 1
+        """, (f"{yymm}-%",)).fetchone()
+        seq = max(500, (row["max_seq"] or 499) + 1)
+    else:
+        row = conn.execute("""
+            SELECT MAX(CAST(SUBSTR(affidavit_number, 6) AS INTEGER)) AS max_seq
+            FROM affidavits
+            WHERE affidavit_number LIKE ? AND pre_bill = 0
+        """, (f"{yymm}-%",)).fetchone()
+        seq = (row["max_seq"] or 0) + 1
+    return f"{yymm}-{seq:03d}"
