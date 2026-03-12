@@ -9,3 +9,6 @@ __pycache__/
 
 # Windows Zone Identifier sidecar files
 *:Zone.Identifier
+
+# EtereBridge is a separate project (reference only)
+scripts/EtereBridge/
