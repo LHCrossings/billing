@@ -125,6 +125,24 @@ def main():
                         )
                         continue
 
+                    # Protect airtime orders from being overwritten by a PRD/PROD file
+                    # sharing the same contract number. A PRD file has no monthly rows
+                    # and its estimate contains production keywords.
+                    incoming_est = (record.get("estimate") or "").upper()
+                    is_prod = any(kw in incoming_est for kw in ("PROD", "PRODUCTION"))
+                    if is_prod and not monthly:
+                        has_monthly = conn.execute(
+                            "SELECT 1 FROM order_monthly WHERE contract_number = ? LIMIT 1",
+                            (cn,)
+                        ).fetchone()
+                        if has_monthly:
+                            print(
+                                f"  [SKIP prod-overwrite] {path.name} "
+                                f"(contract {cn} already has airtime data)"
+                            )
+                            skipped += 1
+                            continue
+
             advertiser = record.get("advertiser") or record.get("client") or "?"
             market = record.get("market") or "?"
             months_str = ", ".join(

@@ -273,6 +273,11 @@ def main():
     print(f"\nLoading expected amounts from {db_path} ...")
     with get_conn(db_path) as conn:
         expected = load_expected_from_db(conn, year, month)
+        # Load all known contract numbers so we can distinguish "registered but no monthly"
+        # (PRD/CRD/one-time) from truly unknown contracts
+        known_contracts: set[int] = {
+            row[0] for row in conn.execute("SELECT contract_number FROM orders").fetchall()
+        }
     print(f"  {len(expected)} contract+market groups in DB")
 
     # --- Compare ---
@@ -313,9 +318,19 @@ def main():
         print(f"\n--- MISSING FROM LOGS ({len(results['missing'])}) ---")
         print_detail_rows(results["missing"], show_diff=False)
 
-    if results["unexpected"]:
-        print(f"\n--- UNEXPECTED IN LOGS (not in DB) ({len(results['unexpected'])}) ---")
-        print_detail_rows(results["unexpected"], show_diff=False)
+    # Split unexpected into truly unknown vs. registered orders with no monthly expectation
+    # (PRD, CRD, one-time charges that share a contract number with an airtime order)
+    unexpected_unknown = [r for r in results["unexpected"] if r["contract"] not in known_contracts]
+    unexpected_known   = [r for r in results["unexpected"] if r["contract"] in known_contracts]
+
+    if unexpected_unknown:
+        print(f"\n--- UNEXPECTED IN LOGS (not in DB) ({len(unexpected_unknown)}) ---")
+        print_detail_rows(unexpected_unknown, show_diff=False)
+
+    if unexpected_known:
+        print(f"\n--- REGISTERED, NO MONTHLY EXPECTED ({len(unexpected_known)}) ---")
+        print(f"  (PRD/CRD/one-time — registered in orders table but no monthly amount on file)")
+        print_detail_rows(unexpected_known, show_diff=False)
 
     if wl_actual:
         print(f"\n--- WORLDLINK ({len(wl_actual)} groups, ${total_wl:,.2f}) ---")
