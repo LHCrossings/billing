@@ -175,11 +175,21 @@ def cmd_register(conn, args):
 
     monthly = record.pop("_monthly")
     cn = record["contract_number"]
+
+    from collections import defaultdict
+    monthly_by_cn: dict[int, list] = defaultdict(list)
+    for m in monthly:
+        monthly_by_cn[m["contract_number"]].append(m)
+
     upsert_order(conn, record)
-    upsert_monthly(conn, cn, monthly)
+    for group_cn, group_rows in monthly_by_cn.items():
+        upsert_monthly(conn, group_cn, group_rows)
+
     print(f"Registered contract {cn}  —  {record.get('advertiser') or '?'} / {record.get('client') or '?'}")
     print(f"  Market: {record.get('market') or '?'}   Estimate: {record.get('estimate') or '?'}")
-    print(f"  Monthly rows: {len(monthly)}")
+    extra = [c for c in monthly_by_cn if c != cn]
+    print(f"  Monthly rows: {len(monthly_by_cn.get(cn, []))} for contract {cn}" +
+          (f"; also registered monthly for: {', '.join(str(c) for c in sorted(extra))}" if extra else ""))
 
 
 def cmd_affidavit(conn, args):

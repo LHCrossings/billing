@@ -126,20 +126,35 @@ def main():
                         continue
 
 
+            # Group monthly rows by their own contract_number (supports multi-contract run sheets)
+            from collections import defaultdict
+            monthly_by_cn: dict[int, list] = defaultdict(list)
+            for m in monthly:
+                monthly_by_cn[m["contract_number"]].append(m)
+
+            extra_contracts = [c for c in monthly_by_cn if c != cn]
+
             advertiser = record.get("advertiser") or record.get("client") or "?"
             market = record.get("market") or "?"
             months_str = ", ".join(
                 f"{m['year']}-{m['month']:02d}=${m['gross']:,.2f}"
-                for m in monthly
+                for m in monthly_by_cn.get(cn, [])
             )
             print(
                 f"  [{cn}] {advertiser} | {market} | "
-                f"{len(monthly)} month(s): {months_str or '(none)'}"
+                f"{len(monthly_by_cn.get(cn, []))} month(s): {months_str or '(none)'}"
             )
+            for extra_cn in sorted(extra_contracts):
+                extra_rows = monthly_by_cn[extra_cn]
+                extra_str = ", ".join(
+                    f"{m['year']}-{m['month']:02d}=${m['gross']:,.2f}" for m in extra_rows
+                )
+                print(f"    + [{extra_cn}] {len(extra_rows)} month(s): {extra_str}")
 
             if not args.dry_run and conn is not None:
                 upsert_order(conn, record)
-                upsert_monthly(conn, cn, monthly)
+                for group_cn, group_rows in monthly_by_cn.items():
+                    upsert_monthly(conn, group_cn, group_rows)
 
             registered += 1
 

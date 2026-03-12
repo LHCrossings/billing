@@ -201,11 +201,13 @@ def compute_monthly_from_runsheet(
 ) -> list[dict]:
     """
     Compute monthly gross/net from Run Sheet col S (billing month) and col P (gross).
-    Returns list of {year, month, gross, net}, sorted by (year, month).
-    Skips header row and blank rows. Skips rows where P == 0.
+    Groups by contract number (col AB), year, month, market, and revenue type (col X)
+    so a single Run Sheet containing multiple contracts is handled correctly.
+    Returns list of {contract_number, year, month, market, revenue_type, gross, net}.
+    Skips header row, blank rows, and rows where P == 0.
     """
-    # Key: (year, month, market, revenue_type)
-    monthly: dict[tuple[int, int, str, str], float] = {}
+    # Key: (contract_number, year, month, market, revenue_type)
+    monthly: dict[tuple[int | None, int, int, str, str], float] = {}
     first_row = True
 
     for row_vals in ws.iter_rows(values_only=True):
@@ -240,13 +242,21 @@ def compute_monthly_from_runsheet(
         year, month = ym
         market = str(record.get("AC") or "").strip() or "Unknown"
         revenue_type = str(record.get("X") or "").strip()
-        key = (year, month, market, revenue_type)
+
+        # Use contract number from col AB if present; fall back to None
+        try:
+            cn = int(float(str(record.get("AB") or "").strip()))
+        except (ValueError, TypeError):
+            cn = None
+
+        key = (cn, year, month, market, revenue_type)
         monthly[key] = monthly.get(key, 0.0) + float(gross_raw)
 
     result = []
-    for (year, month, market, revenue_type), gross in sorted(monthly.items()):
+    for (cn, year, month, market, revenue_type), gross in sorted(monthly.items()):
         net = gross * (1 - agency_discount)
         result.append({
+            "contract_number": cn,
             "year": year, "month": month, "market": market,
             "revenue_type": revenue_type, "gross": gross, "net": net,
         })
@@ -293,8 +303,11 @@ def parse_order_file(path: Path, metadata_only: bool = False) -> dict | None:
     wb.close()
 
     cn = meta["contract_number"]
+    # Each monthly row carries its own contract_number from col AB.
+    # Fall back to the Sales Confirmation header contract if col AB was blank on that row.
     for row in monthly:
-        row["contract_number"] = cn
+        if not row.get("contract_number"):
+            row["contract_number"] = cn
 
     return {
         "contract_number": cn,
