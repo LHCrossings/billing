@@ -35,7 +35,9 @@ def main():
         print(f"No rows found for contract {target_cn}" + (f" in {year}-{month:02d}" if year else ""))
         return
 
+    bill_codes = sorted({str(r.get("A") or "").strip() for r in matches if r.get("A")})
     print(f"Found {len(matches)} rows for contract {target_cn}:\n")
+    print(f"  Bill code(s): {', '.join(bill_codes) or '(none)'}\n")
     print(f"  {'FILE':<30} {'DATE':<12} {'TYPE':<5} {'AA':<4} {'GROSS':>10}  {'MARKET':<8} {'MONTH'}")
     print("  " + "-" * 90)
     for r in matches:
