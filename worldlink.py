@@ -7,10 +7,12 @@ then to CLEANED.
 """
 
 import csv
+import re
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from aggregate import expected_billing_month, MONTH_NAMES
+from orders_db import DB_PATH, get_conn
 
 WORLDLINK_DIR = Path(__file__).parent / "Worldlink"
 REPORTS_DIR   = Path(__file__).parent / "reports"
@@ -222,7 +224,25 @@ def load_worldlink_csv(path: Path, contract: str, estimate: str) -> tuple[list[d
     return rows, warnings
 
 
-def load_placement_confirmation(path: Path) -> tuple[list[dict], list[str]]:
+def build_estimate_lookup(db_path: Path) -> dict[str, int]:
+    """
+    Build a mapping of {estimate_string: contract_number} from the orders DB.
+    Used to resolve Worldlink COD_CONTRATTO1 codes (e.g. "WL Tatari 212018")
+    to integer Etere contract numbers via the embedded 6-digit estimate.
+    """
+    if not db_path.exists():
+        return {}
+    with get_conn(db_path) as conn:
+        rows = conn.execute(
+            "SELECT contract_number, estimate FROM orders WHERE estimate IS NOT NULL"
+        ).fetchall()
+    return {str(r["estimate"]).strip(): r["contract_number"] for r in rows}
+
+
+def load_placement_confirmation(
+    path: Path,
+    estimate_lookup: dict[str, int] | None = None,
+) -> tuple[list[dict], list[str]]:
     """
     Parse a combined Etere placement-confirmation CSV (all Worldlink contracts in one file).
 
@@ -233,8 +253,10 @@ def load_placement_confirmation(path: Path) -> tuple[list[dict], list[str]]:
       Row 3: spot data column headers (COD_CONTRATTO1, committente, ...)
       Row 4+: spot data rows — one row per aired spot
 
-    Contract (col AB) and bill code (col A) are read per-row from COD_CONTRATTO1
-    and committente respectively, since a single file covers multiple contracts.
+    Contract (col AB) is resolved by extracting the 6-digit estimate from COD_CONTRATTO1
+    (e.g. "WL Tatari 212018" → "212018") and looking it up in estimate_lookup (from the DB).
+    Falls back to id_contrattitestata if present in the CSV (modified report only).
+    COD_CONTRATTO1 string code goes to col O.
 
     Returns (rows, warnings).
     """
@@ -271,9 +293,23 @@ def load_placement_confirmation(path: Path) -> tuple[list[dict], list[str]]:
             warnings.append(f"{path.name} line {line_num}: unparseable date '{air_date_str}'")
             continue
 
-        contract  = get(row, "COD_CONTRATTO1")
+        wl_code     = get(row, "COD_CONTRATTO1")   # string label e.g. "WL Tatari 212018"
         committente = get(row, "committente")
-        bill_code = f"Worldlink:{committente}" if committente else "Worldlink"
+        bill_code   = f"Worldlink:{committente}" if committente else "Worldlink"
+
+        # Prefer integer ID from modified report; fall back to DB estimate lookup
+        raw_contract = get(row, "id_contrattitestata")
+        if raw_contract:
+            try:
+                contract = int(float(raw_contract))
+            except ValueError:
+                contract = None
+        else:
+            m = re.search(r'\d{6}', wl_code)
+            estimate_str = m.group() if m else None
+            contract = estimate_lookup.get(estimate_str) if (estimate_lookup and estimate_str) else None
+            if estimate_str and not contract:
+                warnings.append(f"{path.name} line {line_num}: no DB match for estimate '{estimate_str}' (from '{wl_code}')")
 
         timerange = get(row, "timerange2")
         if "-" in timerange:
@@ -327,7 +363,7 @@ def load_placement_confirmation(path: Path) -> tuple[list[dict], list[str]]:
             "L":  spot_num,
             "M":  line_val,
             "N":  spot_type,
-            "O":  contract,
+            "O":  wl_code,
             "P":  gross,
             "Q":  market_code,
             "R":  gross,
@@ -411,6 +447,7 @@ def load_all_worldlink(
     billing_year: int | None = None,
     billing_month: int | None = None,
     reports_dir: Path | None = None,
+    db_path: Path | None = None,
 ) -> tuple[list[dict], list[str]]:
     """
     Load and process all Worldlink CSV files.
@@ -423,6 +460,9 @@ def load_all_worldlink(
         worldlink_dir = WORLDLINK_DIR
     if reports_dir is None:
         reports_dir = REPORTS_DIR
+    if db_path is None:
+        db_path = DB_PATH
+    estimate_lookup = build_estimate_lookup(db_path)
 
     csv_files = sorted(worldlink_dir.glob("*.csv"))
     print(f"\nFound {len(csv_files)} Worldlink CSV files")
@@ -448,7 +488,7 @@ def load_all_worldlink(
     # --- Combined placement-confirmation export from reports/ ---
     pc_path = reports_dir / PLACEMENT_CONFIRMATION_NAME
     if pc_path.exists():
-        pc_rows, pc_warnings = load_placement_confirmation(pc_path)
+        pc_rows, pc_warnings = load_placement_confirmation(pc_path, estimate_lookup)
         all_warnings.extend(pc_warnings)
         contracts_found = len({r["AB"] for r in pc_rows})
         print(f"  {pc_path.name}: {len(pc_rows)} rows ({contracts_found} contracts)")
