@@ -490,8 +490,11 @@ def load_all_worldlink(
     if pc_path.exists():
         pc_rows, pc_warnings = load_placement_confirmation(pc_path, estimate_lookup)
         all_warnings.extend(pc_warnings)
-        contracts_found = len({r["AB"] for r in pc_rows})
+        contracts_found = len({r["AB"] for r in pc_rows if r["AB"] is not None})
+        unmatched = sum(1 for r in pc_rows if r["AB"] is None)
         print(f"  {pc_path.name}: {len(pc_rows)} rows ({contracts_found} contracts)")
+        if unmatched:
+            print(f"  WARNING: {unmatched} rows had no DB contract match (will appear in NO CONTRACT)")
         all_rows.extend(pc_rows)
     else:
         print(f"  (no {PLACEMENT_CONFIRMATION_NAME} in {reports_dir})")
