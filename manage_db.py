@@ -85,6 +85,16 @@ def cmd_show(conn, args):
         print(f"No order found for contract {args.contract}.")
         sys.exit(1)
 
+    if getattr(args, "json_output", False):
+        data = dict(row)
+        if data.get("emails"):
+            try:
+                data["emails"] = json.loads(data["emails"])
+            except Exception:
+                pass
+        print(json.dumps(data))
+        return
+
     if args.field:
         field = args.field.lower()
         if field not in ORDER_FIELDS:
@@ -131,6 +141,10 @@ def cmd_monthly(conn, args):
         ORDER BY year, month, market
     """, (args.contract,)).fetchall()
 
+    if getattr(args, "json_output", False):
+        print(json.dumps([dict(r) for r in rows]))
+        return
+
     print(f"\n  Monthly breakdown — contract {args.contract}  ({order['advertiser'] or '?'} / {order['client'] or '?'})\n")
     print(f"  {'Month':<12} {'Market':<8} {'Gross':>12}  {'Net':>12}")
     print(f"  {'─' * 50}")
@@ -149,6 +163,10 @@ def cmd_search(conn, args):
         WHERE client LIKE ? OR advertiser LIKE ? OR estimate LIKE ?
         ORDER BY client, advertiser, contract_number
     """, (term, term, term)).fetchall()
+
+    if getattr(args, "json_output", False):
+        print(json.dumps([dict(r) for r in rows]))
+        return
 
     if not rows:
         print(f"No orders matching '{args.text}'.")
@@ -194,6 +212,11 @@ def cmd_affidavit(conn, args):
             sys.exit(1)
 
         rows = get_affidavits_for_month(conn, year, month)
+
+        if getattr(args, "json_output", False):
+            print(json.dumps([dict(r) for r in rows]))
+            return
+
         if not rows:
             print(f"No affidavits for {year}-{month:02d}.")
             return
@@ -291,18 +314,24 @@ def cmd_list_agencies(conn, args):
         ORDER BY o.client
     """).fetchall()
 
+    if getattr(args, "json_output", False):
+        print(json.dumps([
+            {"agency": r["agency"], "edi": bool(r["edi"]) if r["edi"] is not None else None, "edi_notes": r["edi_notes"]}
+            for r in rows
+        ]))
+        return
+
     if not rows:
         print("No orders in database.")
         return
 
-    print(f"{'AGENCY':<45} {'NOTARIZED':<11} {'EDI':<6} EDI NOTES")
-    print("-" * 85)
+    print(f"{'AGENCY':<45} {'EDI':<6} EDI NOTES")
+    print("-" * 75)
     for row in rows:
-        notarized = "YES" if row["notarized"] else "-"
         edi = "YES" if row["edi"] else "-"
         notes = row["edi_notes"] or ""
-        flag_note = " (not set)" if row["edi"] is None and row["notarized"] is None else ""
-        print(f"{row['agency']:<45} {notarized:<11} {edi:<6} {notes}{flag_note}")
+        flag_note = " (not set)" if row["edi"] is None else ""
+        print(f"{row['agency']:<45} {edi:<6} {notes}{flag_note}")
 
 
 def cmd_list_advertisers(conn, args):
@@ -315,6 +344,13 @@ def cmd_list_advertisers(conn, args):
         WHERE o.advertiser IS NOT NULL AND o.advertiser != ''
         ORDER BY o.advertiser
     """).fetchall()
+
+    if getattr(args, "json_output", False):
+        print(json.dumps([
+            {"advertiser": r["advertiser"], "notarized": bool(r["notarized"]) if r["notarized"] is not None else None}
+            for r in rows
+        ]))
+        return
 
     if not rows:
         print("No orders in database.")
@@ -388,6 +424,10 @@ def cmd_show_month(conn, args):
         ORDER BY o.client, o.advertiser, om.market
     """, (year, month)).fetchall()
 
+    if getattr(args, "json_output", False):
+        print(json.dumps([dict(r) for r in rows]))
+        return
+
     if not rows:
         print(f"No orders found for {year}-{month:02d}.")
         return
@@ -448,10 +488,11 @@ def cmd_remove_order(conn, args):
     else:
         print("Monthly rows: (none)")
 
-    confirm = input("\nDelete this order and all its monthly data? [y/N] ").strip().lower()
-    if confirm != "y":
-        print("Cancelled.")
-        return
+    if not getattr(args, "confirm", False):
+        confirm = input("\nDelete this order and all its monthly data? [y/N] ").strip().lower()
+        if confirm != "y":
+            print("Cancelled.")
+            return
 
     conn.execute("DELETE FROM orders WHERE contract_number = ?", (cn,))
     # order_monthly deleted via ON DELETE CASCADE
@@ -464,6 +505,8 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--db", default=str(DB_PATH), help="Path to billing database")
+    parser.add_argument("--json", action="store_true", default=False, dest="json_output",
+                        help="Output results as JSON (for API use)")
     sub = parser.add_subparsers(dest="command")
     sub.required = True
 
@@ -518,6 +561,7 @@ def main():
 
     p_remove = sub.add_parser("remove-order", help="Remove an order and its monthly data from the DB")
     p_remove.add_argument("contract_number", metavar="CONTRACT_NUMBER")
+    p_remove.add_argument("--confirm", action="store_true", default=False, help="Skip confirmation prompt")
 
     args = parser.parse_args()
     db_path = Path(args.db)
