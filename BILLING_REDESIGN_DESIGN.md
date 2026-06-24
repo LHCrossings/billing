@@ -273,3 +273,21 @@ The walkthrough paused after affidavit creation. Still to cover:
   `orders_db.py`, `order_parser.py`, `backfill.py` (the last three slated for removal).
 - **Paths:** books `C:\Work Temp\Billing`; logs `K:\Traffic\logs\{YEAR}\{MM Month}\`;
   orders (being retired) `M:\Clients\{Agency}\{Client}`.
+
+---
+
+## 11. Validation strategy — backtest against history
+
+We have **~20 years of known-true billing history** (archived books in `Miscellany/`). Use it as
+the oracle to prove the automation before it touches a live month:
+
+- Pick a **past month** with a finished book. Run the new Etere-based pipeline for that month's
+  date range, then **diff the generated output against the actual billed result.**
+- The **Cleaned tab is the to-the-cent oracle** — compare generated lines/totals against it
+  line by line.
+- Every diff is signal: a **real bug to fix**, or a **genuine edge case** the new system must
+  handle (orphan spots, billing-line cases, rounding, classification gaps).
+- Backtest **several months** (different mixes: heavy Worldlink, package orders, net agency orders,
+  production/credits) to exercise the edge cases, not just the happy path.
+- This is the acceptance gate: the redesign is trustworthy when it **reproduces past months to the
+  cent** (or every difference is explained and intended).
