@@ -202,13 +202,20 @@ Etere docs in ctv-orderentry: `.claude/documents/data-reference.md`,
 ## 6. Parked / open questions
 
 - **Rounding (scoped + decided):** the affidavit total is **always the sum of the spots listed**
-  (§4.5). Rounding drift happens **only when grossing up an agency order delivered in net** —
-  Etere rates are 3-decimal, grossing-up at full precision diverges by cents. Two sub-problems
-  remain to design: (a) a **consistent grossing-up method** (net→gross) so per-spot values are
-  right, and (b) a **good way to match the order total from the M drive** (the agency's net order)
-  as a validation check. **Open:** does the expected/order total come from the **M-drive order file**
-  (where the agency's net amount lives) or from **Etere** contract terms? Net-given agency orders may
-  force a targeted M-drive lookup (one order's total — not the old "crawl everything").
+  (§4.5). The general cause of drift is **distributing an authoritative total across N lines that
+  don't divide evenly**, so rounded per-line values don't re-sum to the total. Known triggers
+  (likely not exhaustive):
+  1. **Grossing up a net agency order** (net→gross; Etere rates are 3-decimal) — most common.
+  2. **Package orders** — a package total spread across a **non-evenly-divisible spot count**
+     (e.g. $1,000 ÷ 7 = $142.857… each → rounded rates don't re-sum to $1,000).
+  - **Fix (one mechanism):** wherever a total is allocated across spots, run a
+    **penny-reconciliation** (largest-remainder allocation) so per-spot values **sum exactly** to
+    the authoritative total. Dovetails with §4.5 — the lines are the truth, so make them sum right.
+  - Still to design: (a) a **consistent grossing-up method** (net→gross), and (b) a **good way to
+    match the order total from the M drive** (the agency's net order) as a validation check.
+  - **Open:** does the expected/order total come from the **M-drive order file** (where the agency's
+    net amount lives) or from **Etere** contract terms? Net-given agency orders may force a targeted
+    M-drive lookup (one order's total — not the old "crawl everything").
 - **Home for billing classifications** (revenue type X, agency flag Z, affidavit-required AA, AE):
   Etere where possible, else thin overlay, else default rules?
 - **Verify in live Etere:** `SELECT NOTE FROM CONTRATTITESTATA …` readable by contract number;
