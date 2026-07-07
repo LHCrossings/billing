@@ -119,7 +119,58 @@ Was previously a submodule; now standalone. ~3 months stale.
 
 ---
 
-## Next steps (start here on Windows)
+## Update 2026-07-07 (WSL session): agreed completion plan
+
+Lee reviewed the project state from WSL and signed off on the shape below.
+**Hard constraint from Lee:** the Commercial Log, the MASTER tab, and the
+CLEANED tab must remain the 29-column (A–AC) Excel grids — many reports run
+off those tables. JSON/SQLite is fine for everything else.
+
+**Architecture rule:** structured data (SQLite + JSON) is the working store;
+the three sacred grids are *generated Excel views*. Python writes MASTER and
+CLEANED into a copy of the existing template (openpyxl), so downstream
+reports/pivots are untouched. Specifically:
+
+- `config.json` — all `M:\...` paths (env-overridable), market list, current
+  billing month. Makes the tools testable on any machine.
+- `templates.json` — affidavit template-selection rules: order attributes
+  (trade from col X, notarized from `advertiser_flags`, EDI from
+  `agency_flags`, multi-market) → which template. This is the formal
+  template-selection system Lee asked for.
+- Monthly run state lives in SQLite — the existing (unused) `affidavits` and
+  `affidavit_lines` tables: numbering, pre-bill reservations, review status,
+  Cornerstone/Desert manual values. Side benefit: once affidavits write to
+  the DB, PRD/CRD get real `order_monthly` entries, closing that validate gap.
+
+**Build order (each phase verified against the completed Feb 2026 month —
+logs, Master Billing Sheet 2602, orders, and Worldlink CSVs are all in-repo
+as ground truth):**
+
+1. **Config extraction** — move hardcoded paths into `config.json` + env
+   override. Small, contained; unblocks cross-machine testing.
+2. **MASTER writer** — `aggregate.py` output → MASTER tab of a fresh Master
+   Billing Sheet from template. Verify by diffing against hand-built 2602.
+3. **Template walkthrough → `templates.json`** — REQUIRES LEE. Enumerate every
+   affidavit template variant (standard / notarized / trade / EDI / …) and its
+   trigger conditions; encode as data. This was the deliberate pause point in
+   the February session — do this before writing any generation code.
+4. **Affidavit generator** — group (by col AB, else bill code + estimate),
+   header from Sales Confirmation via orders DB, template selection, spot
+   lines from row 16, totals + multi-market formulas. Writes each affidavit
+   tab and registers it in the `affidavits` table. Human review stays a step.
+5. **Numbering + CLEANED compiler** — port the `NumberAffidavits` macro
+   (pre-bills 500+ first, then 001+, YYMM-XXX) and
+   `CompileAffidavitsToCleanedWithChecklist`: affidavit lines + DNI broker
+   lines into CLEANED, prompt for Cornerstone/Desert (rows 2–3), compute
+   WorldLink fee rows 4–5 last.
+
+**Start with phase 3 (template walkthrough)** if Lee is available — it's the
+only step needing his input and everything downstream depends on it. Phases
+1–2 can proceed anytime without him.
+
+---
+
+## Next steps (original framing — superseded by the plan above)
 
 1. **Lee walks Claude through the current end-to-end billing flow.** Most useful
    framing:
