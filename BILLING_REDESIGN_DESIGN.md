@@ -19,6 +19,10 @@
   (`order_parser.py`)** as billing inputs — replaced by Etere queries keyed on contract number.
 - **Goal:** `contract number in → fully-formed, reconciled affidavit out, exceptions flagged.`
   Move affidavits off the hand-edited Excel system entirely.
+- **Output-format constraint (Lee, 2026-07-07):** the **Commercial Log**, the **Master tab**,
+  and the **Cleaned tab** must remain the 29-column (A–AC) Excel grids — many downstream
+  reports run off those tables. Other data can move to JSON/DB, but these three surfaces
+  stay Excel: the redesign *generates* them as views rather than retiring them.
 
 ---
 
